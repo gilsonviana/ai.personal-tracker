@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,18 +24,24 @@ async def detect_transfers(user_id: uuid.UUID, session: AsyncSession) -> int:
 
     stmt = (
         select(exp.id, inc.id)
+        .select_from(exp)
         .join(ba_exp, ba_exp.id == exp.bank_account_id)
+        .join(
+            inc,
+            and_(
+                inc.amount == exp.amount,
+                inc.type == "income",
+                inc.bank_account_id != exp.bank_account_id,
+                func.abs(exp.date - inc.date) <= 1,
+                inc.is_transfer.is_(False),
+            ),
+        )
         .join(ba_inc, ba_inc.id == inc.bank_account_id)
         .where(
             ba_exp.user_id == user_id,
             ba_inc.user_id == user_id,
             exp.type == "expense",
-            inc.type == "income",
-            exp.amount == inc.amount,
-            exp.bank_account_id != inc.bank_account_id,
-            func.abs(exp.date - inc.date) <= 1,
             exp.is_transfer.is_(False),
-            inc.is_transfer.is_(False),
         )
         .order_by(exp.id, func.abs(exp.date - inc.date), inc.created_at)
     )
