@@ -19,8 +19,11 @@ async def get_reflection(summaries: list) -> str:
     if not summaries:
         return "No data available for analysis."
 
+    def fmt(cents: int) -> str:
+        return f"R$ {cents / 100:,.2f}"
+
     summary_text = "\n".join(
-        f"- {s.period}: income={s.total_income}, expenses={s.total_expenses}, net={s.net}"
+        f"- {s.period}: income={fmt(s.total_income)}, expenses={fmt(s.total_expenses)}, net={fmt(s.net)}"
         for s in summaries[:6]
     )
     prompt = _PROMPT.format(summaries=summary_text)
@@ -29,9 +32,9 @@ async def get_reflection(summaries: list) -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{settings.OLLAMA_BASE_URL}/api/generate",
-                json={"model": "mistral:7b", "prompt": prompt, "stream": False},
+                json={"model": settings.OLLAMA_MODEL, "prompt": prompt, "stream": False},
             )
             resp.raise_for_status()
             return resp.json().get("response", "").strip()
     except Exception:
-        return "LLM reflection unavailable. Please ensure Ollama is running with the mistral:7b model."
+        return f"LLM reflection unavailable. Please ensure Ollama is running with the {settings.OLLAMA_MODEL} model."
