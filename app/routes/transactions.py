@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
 from app.db.database import get_async_session
+from app.ml.transfer_detector import detect_transfers, unmark_transfer
 from app.models.bank_account import BankAccount
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -26,6 +27,8 @@ class TransactionOut(BaseModel):
     type: str
     category_id: uuid.UUID | None
     is_anomaly: bool
+    is_transfer: bool
+    transfer_pair_id: uuid.UUID | None
     notes: str | None
     created_at: datetime
 
@@ -35,6 +38,7 @@ class TransactionOut(BaseModel):
 class TransactionPatch(BaseModel):
     category_id: uuid.UUID | None = None
     notes: str | None = None
+    is_transfer: bool | None = None
 
 
 async def _owned_account_ids(user: User, session: AsyncSession) -> list[uuid.UUID]:
@@ -86,11 +90,29 @@ async def patch_transaction(
     tx = result.scalar_one_or_none()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+
+    patch = payload.model_dump(exclude_unset=True)
+
+    # Unmarking a transfer must clear both legs via transfer_pair_id
+    if patch.get("is_transfer") is False:
+        await unmark_transfer(transaction_id, session)
+        patch.pop("is_transfer")
+
+    for field, value in patch.items():
         setattr(tx, field, value)
+
     await session.commit()
     await session.refresh(tx)
     return tx
+
+
+@router.post("/detect-transfers", status_code=status.HTTP_200_OK)
+async def run_transfer_detection(
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    pairs_found = await detect_transfers(user.id, session)
+    return {"pairs_found": pairs_found}
 
 
 @router.delete("/", status_code=status.HTTP_204_NO_CONTENT)

@@ -25,6 +25,8 @@ class Transaction(Base):
         ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
     )
     is_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_transfer: Mapped[bool] = mapped_column(Boolean, default=False)
+    transfer_pair_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

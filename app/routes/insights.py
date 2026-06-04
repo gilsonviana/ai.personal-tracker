@@ -64,6 +64,7 @@ async def monthly_insights(
             ).label("total_expenses"),
         )
         .where(Transaction.bank_account_id.in_(ids))
+        .where(Transaction.is_transfer.is_(False))
     )
 
     if year and month:

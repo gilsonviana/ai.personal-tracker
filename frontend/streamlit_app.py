@@ -159,7 +159,11 @@ def upload_page():
             files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
         )
         if resp.status_code == 200:
-            st.success(f"Imported {resp.json()['rows_imported']} transactions.")
+            data = resp.json()
+            msg = f"Imported {data['rows_imported']} transactions."
+            if data.get("transfers_detected", 0):
+                msg += f" {data['transfers_detected']} inter-account transfer(s) detected and excluded from insights."
+            st.success(msg)
         else:
             st.error(resp.text)
 
@@ -183,12 +187,18 @@ def transactions_page():
     txs  = resp.json() if resp.status_code == 200 else []
 
     for tx in txs:
-        icon         = "+" if tx["type"] == "income" else "-"
-        anomaly_flag = " [ANOMALY]" if tx["is_anomaly"] else ""
-        account_name = account_names.get(tx["bank_account_id"], "Unknown account")
+        if tx.get("is_transfer"):
+            icon = "↔"
+        elif tx["type"] == "income":
+            icon = "+"
+        else:
+            icon = "-"
+        anomaly_flag  = " [ANOMALY]"  if tx["is_anomaly"]        else ""
+        transfer_flag = " [TRANSFER]" if tx.get("is_transfer")   else ""
+        account_name  = account_names.get(tx["bank_account_id"], "Unknown account")
         st.write(
             f"{icon} **{tx['date']}** | {account_name} | {tx['description']} | "
-            f"{format_amount(tx['amount'])} | {tx['type']}{anomaly_flag}"
+            f"{format_amount(tx['amount'])} | {tx['type']}{transfer_flag}{anomaly_flag}"
         )
 
 

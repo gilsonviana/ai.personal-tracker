@@ -151,6 +151,37 @@ def format_amount(cents: int) -> str:
 
 ---
 
+## Transfer Detection
+
+When the same user owns multiple bank accounts, a transfer between them appears as an expense in the source account and an income in the destination account. Both legs are stored in the `transactions` table but must be excluded from income/expense totals to avoid double-counting in insights and the health score.
+
+### Detection rules
+A pair of transactions is auto-detected as an internal transfer when **all** of the following are true:
+- Both belong to the same user (via `bank_accounts.user_id`).
+- They have **opposite types** (one `income`, one `expense`).
+- They belong to **different** `bank_account_id`s.
+- Their `amount` values are **exactly equal** (cents).
+- Their `date`s differ by **at most 1 calendar day** (handles overnight settlement).
+
+### Schema fields (on `transactions`)
+- `is_transfer` — `Boolean`, default `False`. Set to `True` on both legs when matched.
+- `transfer_pair_id` — `UUID`, nullable. Shared UUID linking both legs; used to clear both at once on unmark.
+
+### Detection trigger
+`detect_transfers(user_id, session)` in `app/ml/transfer_detector.py` is called:
+1. Automatically after every file upload (`app/routes/uploads.py`).
+2. On demand via `POST /transactions/detect-transfers`.
+
+The function is idempotent — already-matched pairs are never re-matched.
+
+### Insights exclusion
+All aggregation queries in `app/routes/insights.py` apply `.where(Transaction.is_transfer.is_(False))`. Transfers are invisible to the health score and the LLM narrative.
+
+### Manual override
+`PATCH /transactions/{id}` accepts `is_transfer: bool`. Setting it to `False` on either leg calls `unmark_transfer()` which clears both legs of the pair atomically.
+
+---
+
 ## Language Handling
 
 Transaction descriptions may be in English, Portuguese, or a mix of both — this is expected from Brazilian bank statements. No translation layer is applied.

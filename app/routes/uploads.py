@@ -12,6 +12,7 @@ from app.core.security import current_active_user
 from app.db.database import get_async_session
 from app.ml.categoriser import get_categoriser
 from app.ml.parser import parse_file
+from app.ml.transfer_detector import detect_transfers
 from app.models.bank_account import BankAccount, Import
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 class UploadResult(BaseModel):
     import_id: uuid.UUID
     rows_imported: int
+    transfers_detected: int
 
 
 @router.post("/{account_id}", response_model=UploadResult)
@@ -66,4 +68,5 @@ async def upload_statement(
         session.add(tx)
 
     await session.commit()
-    return UploadResult(import_id=imp.id, rows_imported=len(rows))
+    transfers = await detect_transfers(user.id, session)
+    return UploadResult(import_id=imp.id, rows_imported=len(rows), transfers_detected=transfers)
