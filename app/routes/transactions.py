@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
@@ -91,3 +91,15 @@ async def patch_transaction(
     await session.commit()
     await session.refresh(tx)
     return tx
+
+
+@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_all_transactions(
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    owned = await _owned_account_ids(user, session)
+    await session.execute(
+        delete(Transaction).where(Transaction.bank_account_id.in_(owned))
+    )
+    await session.commit()

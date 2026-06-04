@@ -187,6 +187,64 @@ Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs
 
 ---
 
+## Financial Health Score
+
+The score is a number from **0 to 100** that reflects how well you are saving money across the selected period. It is computed per month and then averaged.
+
+### How it is calculated
+
+For each month:
+
+1. **Savings rate** is computed as `net ÷ total_income`, where `net = income − expenses`.
+2. The savings rate is normalised against a **30 % target** — saving 30 % or more of your income in a month yields a perfect monthly score of 1.0.
+3. The result is clamped to `[0.0, 1.0]`, so negative months (expenses exceed income) count as 0 and months above 30 % do not exceed 1.
+4. All monthly scores are averaged and multiplied by 100 to produce the final score.
+
+```
+monthly_score = clamp(savings_rate / 0.30, 0.0, 1.0)
+final_score   = average(monthly_scores) × 100
+```
+
+### Score reference
+
+| Score | What it means |
+|---|---|
+| **85 – 100** | Excellent. You consistently save 25–30 %+ of your income. You are building wealth and have a strong financial buffer. |
+| **60 – 84** | Good. You save on average 18–25 % of your income. Some months are better than others but the trend is positive. |
+| **35 – 59** | Fair. Savings are inconsistent — some months you save well, others you break even or overspend. |
+| **10 – 34** | Weak. Most months your expenses consume nearly all your income, leaving little room for savings or emergencies. |
+| **0 – 9** | Critical. You are regularly spending more than you earn. Immediate review of recurring expenses is recommended. |
+
+### Examples
+
+**High score — 91.7**
+
+| Month | Income | Expenses | Savings rate | Monthly score |
+|---|---|---|---|---|
+| 2025-01 | R$ 10,000 | R$ 6,500 | 35 % | 1.00 |
+| 2025-02 | R$ 10,000 | R$ 6,800 | 32 % | 1.00 |
+| 2025-03 | R$ 10,000 | R$ 7,500 | 25 % | 0.83 |
+
+Average score: `(1.00 + 1.00 + 0.83) / 3 × 100 = 94.4`
+
+A person earning R$ 10,000/month and spending around R$ 7,000 consistently qualifies for a high score. Even one month of higher spending only reduces the score slightly.
+
+---
+
+**Low score — 18.3**
+
+| Month | Income | Expenses | Savings rate | Monthly score |
+|---|---|---|---|---|
+| 2025-01 | R$ 10,000 | R$ 9,800 | 2 % | 0.07 |
+| 2025-02 | R$ 10,000 | R$ 11,200 | −12 % | 0.00 |
+| 2025-03 | R$ 10,000 | R$ 9,400 | 6 % | 0.20 |
+
+Average score: `(0.07 + 0.00 + 0.20) / 3 × 100 = 9.0`
+
+A person who consistently spends close to — or beyond — their entire income will score near 0. A single month where expenses exceed income contributes 0 to the average, pulling the score down significantly.
+
+---
+
 ## Amount Handling
 
 All amounts are stored as **integers in cents** (always positive). The transaction direction is captured by the `type` field (`income` or `expense`), never by a negative sign.

@@ -4,7 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
@@ -41,6 +41,8 @@ async def _owned_account_ids(user: User, session: AsyncSession) -> list[uuid.UUI
 @router.get("/monthly", response_model=InsightResponse)
 async def monthly_insights(
     account_id: uuid.UUID | None = Query(None),
+    year: int | None = Query(None, description="Filter to a specific year"),
+    month: int | None = Query(None, ge=1, le=12, description="Filter to a specific month (requires year)"),
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
@@ -55,17 +57,25 @@ async def monthly_insights(
         select(
             period_label.label("period"),
             func.sum(
-                func.case((Transaction.type == "income", Transaction.amount), else_=0)
+                case((Transaction.type == "income", Transaction.amount), else_=0)
             ).label("total_income"),
             func.sum(
-                func.case((Transaction.type == "expense", Transaction.amount), else_=0)
+                case((Transaction.type == "expense", Transaction.amount), else_=0)
             ).label("total_expenses"),
         )
         .where(Transaction.bank_account_id.in_(ids))
-        .group_by(period_label)
-        .order_by(period_label.desc())
-        .limit(12)
     )
+
+    if year and month:
+        q = q.where(func.extract("year", Transaction.date) == year)
+        q = q.where(func.extract("month", Transaction.date) == month)
+    elif year:
+        q = q.where(func.extract("year", Transaction.date) == year)
+    else:
+        q = q.limit(12)
+
+    q = q.group_by(period_label).order_by(period_label.asc())
+
     rows = (await session.execute(q)).all()
     summaries = [
         PeriodSummary(

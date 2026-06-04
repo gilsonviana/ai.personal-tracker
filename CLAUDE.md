@@ -1,26 +1,27 @@
 # ai.personal-finance
 
-Privacy-first personal finance analyser. Users upload bank statements and get ML-powered financial health insights. Everything runs locally — no data leaves the machine.
+Privacy-first personal finance manager. Upload bank statements, declare assets, set budgets, and get ML-powered insights with actionable next steps — everything runs locally, no data leaves the machine.
 
 ---
 
 ## Stack
 
-| Layer             | Tool                    |
-| ----------------- | ----------------------- |
-| API               | FastAPI + uvicorn       |
-| Validation        | Pydantic v2             |
-| Auth              | FastAPI-Users + JWT     |
-| Database          | PostgreSQL (asyncpg)    |
-| ORM               | SQLAlchemy 2.0 (async)  |
-| Migrations        | Alembic                 |
-| CSV parsing       | pandas                  |
-| PDF parsing       | pdfplumber              |
-| Categorisation    | scikit-learn            |
-| Anomaly detection | scikit-learn            |
-| LLM reflection    | Ollama (mistral:7b)     |
-| Frontend          | Streamlit               |
-| Infrastructure    | Docker + docker-compose |
+| Layer              | Tool                    |
+| ------------------ | ----------------------- |
+| API                | FastAPI + uvicorn       |
+| Validation         | Pydantic v2             |
+| Auth               | FastAPI-Users + JWT     |
+| Database           | PostgreSQL (asyncpg)    |
+| ORM                | SQLAlchemy 2.0 (async)  |
+| Migrations         | Alembic                 |
+| CSV parsing        | pandas                  |
+| PDF parsing        | pdfplumber              |
+| Categorisation     | scikit-learn            |
+| Anomaly detection  | scikit-learn            |
+| LLM reflection     | Ollama (mistral:7b)     |
+| Frontend           | Streamlit               |
+| Net-worth charts   | plotly (via `st.plotly_chart`) |
+| Infrastructure     | Docker + docker-compose |
 
 ---
 
@@ -35,12 +36,16 @@ finsight/
 │   │   ├── accounts.py
 │   │   ├── uploads.py
 │   │   ├── transactions.py
-│   │   └── insights.py
+│   │   ├── insights.py
+│   │   ├── assets.py          # v2 — asset CRUD + net-worth
+│   │   └── budgets.py         # v2 — budget CRUD + actual_spent
 │   ├── models/
 │   │   ├── user.py
 │   │   ├── bank_account.py
 │   │   ├── transaction.py
-│   │   └── category.py
+│   │   ├── category.py
+│   │   ├── asset.py           # v2 — Asset + AssetSnapshot
+│   │   └── budget.py          # v2 — Budget
 │   ├── ml/
 │   │   ├── parser.py
 │   │   ├── categoriser.py
@@ -90,6 +95,22 @@ transactions
 categories
   id, user_id (FK, nullable — null means system default), name,
   type (income|expense), created_at
+
+-- v2 --
+
+assets
+  id, user_id (FK), name,
+  type (savings|estate|investment|vehicle|other),
+  value (integer, cents), currency, notes (nullable),
+  created_at, updated_at
+
+asset_snapshots
+  id, asset_id (FK), value (integer, cents), recorded_at (DateTime)
+  — one row appended every time an asset value is updated via PATCH
+
+budgets
+  id, user_id (FK), category_id (FK, nullable — null = global spending cap),
+  period_type (monthly|yearly), amount (integer, cents), created_at
 ```
 
 ---
@@ -123,7 +144,7 @@ def format_amount(cents: int) -> str:
 
 - All database access is async (SQLAlchemy 2.0 async session + asyncpg).
 - Every route is protected by JWT auth unless explicitly marked public (`/auth/register`, `/auth/login`).
-- Every resource (`bank_accounts`, `transactions`, `imports`) is scoped to the authenticated user — always filter by `user_id`.
+- Every resource (`bank_accounts`, `transactions`, `imports`, `assets`, `budgets`) is scoped to the authenticated user — always filter by `user_id`.
 - The `amount` field is `int` throughout the entire app boundary. It only becomes `Decimal` at ingestion and presentation.
 - Ollama prompts are always in English regardless of the language of the transaction data.
 - Categories have system defaults (seeded at startup) and can be customised per user.
@@ -144,11 +165,109 @@ Transaction descriptions may be in English, Portuguese, or a mix of both — thi
 
 Insights are computed at three granularities via SQL aggregation — no ML required:
 
-- **Monthly** — last 12 months, one row per month
-- **Quarterly** — last 4 quarters
-- **Yearly** — all available years
+- **Monthly** — accepts optional `year` + `month` filters; defaults to last 12 months
+- **Quarterly** — last 4 quarters, grouped by `YYYY-Q{n}` label
+- **Yearly** — all available years, grouped by `YYYY`
 
-The LLM reflection layer receives the aggregated summary as context and returns a narrative in English.
+Controlled by a `period_type: monthly | quarterly | yearly` query param on `GET /insights/`.
+
+The LLM reflection layer receives the aggregated summary as context and returns a structured English narrative (see LLM Output Contract below).
+
+---
+
+## Multi-Account Insights
+
+`GET /insights/` accepts an `account_ids` query param (repeatable: `?account_ids=X&account_ids=Y`).
+
+- Omitted or empty → aggregate all accounts owned by the user.
+- One or more IDs → aggregate only those accounts.
+- Any ID not owned by the authenticated user is silently dropped.
+
+This replaces the v1 single `account_id` param.
+
+---
+
+## Assets
+
+Assets represent the user's declared wealth outside of transaction history (savings accounts, real estate, investments, vehicles, etc.).
+
+### Routes
+
+- `GET /assets/` — list all assets; response includes a top-level `net_worth` (sum of all asset values in BRL).
+- `POST /assets/` — create an asset; automatically records the first `AssetSnapshot`.
+- `GET /assets/{id}` — single asset with full snapshot history.
+- `PATCH /assets/{id}` — update `value` (and/or other fields); automatically appends a new `AssetSnapshot` so history is preserved.
+- `DELETE /assets/{id}` — remove asset and all its snapshots.
+
+### Asset types
+
+| Type | Examples |
+|---|---|
+| `savings` | Emergency fund, fixed-income account |
+| `estate` | Property, land |
+| `investment` | Stocks, crypto, funds |
+| `vehicle` | Car, motorcycle |
+| `other` | Any asset that doesn't fit above |
+
+---
+
+## Budgets
+
+Budgets set a spending limit per category (or globally) for a given period.
+
+### Routes
+
+- `GET /budgets/` — list all budgets; each entry is enriched with `actual_spent` for the current period (SQL aggregation over transactions, same pattern as insights).
+- `POST /budgets/` — create a budget.
+- `PATCH /budgets/{id}` — update amount or period_type.
+- `DELETE /budgets/{id}` — remove budget.
+
+### Budget rules
+
+- `category_id = null` → global cap: total expenses across all categories must not exceed `amount` in the period.
+- `period_type = monthly` → resets each calendar month.
+- `period_type = yearly` → resets each calendar year.
+- `actual_spent` in `GET /budgets/` always reflects the current period only.
+
+---
+
+## Financial Health Score (v2)
+
+The score is a number from **0 to 100** averaged across periods. v2 adds a budget-compliance component.
+
+```
+savings_component  = clamp(savings_rate / 0.30, 0.0, 1.0)
+                     — savings_rate = net / total_income per period
+
+budget_component   = clamp(1 − overspend_ratio, 0.0, 1.0)
+                     — overspend_ratio = avg over budgets of max(0, actual − budget) / budget
+
+final_score = (0.7 × savings_component + 0.3 × budget_component) × 100
+```
+
+- If no budgets are defined, `budget_component = 1.0` (no penalty).
+- Periods where `total_income = 0` contribute `savings_component = 0.0`.
+
+---
+
+## LLM Output Contract
+
+The Ollama prompt in `app/ml/reflection.py` must always produce a response in two clearly labelled parts:
+
+```
+Respond in English. Structure your response in exactly two parts:
+
+1. Analysis — 2 to 3 sentences covering trends, strengths, and concerns
+   based on the period summaries below.
+
+2. Next steps — exactly 2 to 3 numbered, specific, actionable recommendations
+   (e.g. "Reduce Food & Groceries spending by 12 % to stay within your monthly budget").
+```
+
+The prompt context passed to the model includes:
+- Monthly period summaries (income, expenses, net).
+- Budget compliance per category (over/under and by how much).
+- Net-worth trend if ≥ 2 asset snapshots exist (latest vs. previous value).
 
 ---
 
@@ -158,6 +277,24 @@ The LLM reflection layer receives the aggregated summary as context and returns 
 - Serialised model lives in `models/` as `.joblib`. Loaded once at app startup.
 - Anomaly detection uses Isolation Forest per spending category, fitted on the user's own history after sufficient data (≥ 3 months).
 - User category corrections are stored and used to retrain on demand (stretch goal).
+
+---
+
+## Frontend Pages (v2)
+
+| Page | Description |
+|---|---|
+| Dashboard | Health score + net-worth metric card; narrative + numbered next-steps list; income vs expenses bar chart |
+| Accounts | Bank account CRUD |
+| Upload | CSV / PDF statement upload |
+| Transactions | Filterable transaction list |
+| Assets | Asset list with current value; total net-worth; plotly sparkline of value history per asset |
+| Budgets | Budget list; actual vs budget bar per category (green ≤ 100 %, amber 100–120 %, red > 120 %) |
+
+**Sidebar — Generate Insight:**
+- Multi-select of the user's bank accounts (replaces single account picker from v1).
+- Period type radio: Monthly / Quarterly / Yearly.
+- Year + optional month inputs (same as v1, hidden when period_type ≠ Monthly).
 
 ---
 
