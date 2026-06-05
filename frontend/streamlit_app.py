@@ -111,7 +111,7 @@ def dashboard_page():
         df["Income (R$)"]   = df["total_income"]   / 100
         df["Expenses (R$)"] = df["total_expenses"] / 100
         st.subheader(f"Income vs Expenses — {period_label}")
-        st.bar_chart(df.set_index("period")[["Income (R$)", "Expenses (R$)"]])
+        st.line_chart(df.set_index("period")[["Income (R$)", "Expenses (R$)"]])
     else:
         st.info("No transactions found for the selected period.")
 

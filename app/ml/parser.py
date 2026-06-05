@@ -10,7 +10,22 @@ import pdfplumber
 
 def to_cents(raw_value: str) -> int:
     cleaned = str(raw_value).strip().replace(" ", "").lstrip("-")
-    cleaned = cleaned.replace(".", "").replace(",", ".")
+    has_comma = "," in cleaned
+    has_dot   = "." in cleaned
+
+    if has_comma and has_dot:
+        # Whichever separator appears LAST is the decimal separator
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            # BR format: "1.234,56" — dot = thousands, comma = decimal
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            # US format: "1,234.56" — comma = thousands, dot = decimal
+            cleaned = cleaned.replace(",", "")
+    elif has_comma and not has_dot:
+        # BR decimal only: "26,27" → "26.27"
+        cleaned = cleaned.replace(",", ".")
+    # dot only ("26.27") or integer ("100") — already valid
+
     decimal = Decimal(cleaned).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return int(decimal * 100)
 
@@ -90,25 +105,55 @@ def _parse_csv(bio: BytesIO) -> list[dict]:
     if not (date_col and desc_col and amount_col):
         return []
 
+    # Detect split credit/debit columns (e.g. Payoneer: "Credit amount" + "Debit amount")
+    credit_col = next((c for c in cols if "credit" in c), None)
+    debit_col  = next((c for c in cols if "debit"  in c), None)
+    split_amounts = bool(credit_col and debit_col and credit_col != debit_col)
+
+    # Detect status column — only import completed/succeeded rows when present
+    status_col = next((c for c in cols if c in ("status", "estado", "situação")), None)
+    _OK_STATUSES = {"completed", "complete", "succeeded", "aprovado", "concluído", "concluido"}
+
     rows = []
     for _, row in df.iterrows():
         try:
+            # Status filter
+            if status_col:
+                status_val = str(row[status_col]).strip().lower()
+                if status_val not in _OK_STATUSES:
+                    continue
+
             d = pd.to_datetime(row[date_col], dayfirst=True).date()
-            raw_amount = str(row[amount_col])
-            if not raw_amount or raw_amount.lower() in ("nan", "none", ""):
-                continue
-            negative = raw_amount.strip().startswith("-")
-            cents = to_cents(raw_amount)
-            if cents == 0:
-                continue
-            if type_col:
-                tx_type = (
-                    "income"
-                    if str(row[type_col]).lower() in ("credit", "income", "receita", "entrada", "crédito", "credito")
-                    else "expense"
-                )
+
+            if split_amounts:
+                # Each row has a credit column (income) and a debit column (expense)
+                raw_credit = str(row[credit_col]).strip()
+                raw_debit  = str(row[debit_col]).strip()
+                credit_cents = to_cents(raw_credit) if raw_credit not in ("0", "0.0", "", "nan") else 0
+                debit_cents  = to_cents(raw_debit)  if raw_debit  not in ("0", "0.0", "", "nan") else 0
+                if credit_cents > 0:
+                    cents, tx_type = credit_cents, "income"
+                elif debit_cents > 0:
+                    cents, tx_type = debit_cents, "expense"
+                else:
+                    continue
             else:
-                tx_type = "expense" if negative else "income"
+                raw_amount = str(row[amount_col])
+                if not raw_amount or raw_amount.lower() in ("nan", "none", ""):
+                    continue
+                negative = raw_amount.strip().startswith("-")
+                cents = to_cents(raw_amount)
+                if cents == 0:
+                    continue
+                if type_col:
+                    tx_type = (
+                        "income"
+                        if str(row[type_col]).lower() in ("credit", "income", "receita", "entrada", "crédito", "credito")
+                        else "expense"
+                    )
+                else:
+                    tx_type = "expense" if negative else "income"
+
             rows.append(
                 {"date": d, "description": str(row[desc_col]).strip(), "amount": cents, "type": tx_type}
             )
