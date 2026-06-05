@@ -44,6 +44,19 @@ async def upload_statement(
 
     content = await file.read()
     filename = file.filename or "upload"
+
+    duplicate = await session.execute(
+        select(Import).where(
+            Import.bank_account_id == account_id,
+            Import.filename == filename,
+        )
+    )
+    if duplicate.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail=f'"{filename}" has already been imported into this account.',
+        )
+
     rows = parse_file(BytesIO(content), filename)
     if not rows:
         raise HTTPException(status_code=422, detail="No transactions found in file")

@@ -164,8 +164,13 @@ def upload_page():
             if data.get("transfers_detected", 0):
                 msg += f" {data['transfers_detected']} inter-account transfer(s) detected and excluded from insights."
             st.success(msg)
+        elif resp.status_code == 409:
+            st.warning(resp.json().get("detail", "This file has already been uploaded."))
         else:
-            st.error(resp.text)
+            try:
+                st.error(resp.json().get("detail", resp.text))
+            except Exception:
+                st.error(resp.text)
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────
