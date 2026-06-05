@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import current_active_user
 from app.db.database import get_async_session
 from app.ml.transfer_detector import detect_transfers, unmark_transfer
-from app.models.bank_account import BankAccount
+from app.models.bank_account import BankAccount, Import
 from app.models.transaction import Transaction
 from app.models.user import User
 
@@ -123,5 +123,8 @@ async def delete_all_transactions(
     owned = await _owned_account_ids(user, session)
     await session.execute(
         delete(Transaction).where(Transaction.bank_account_id.in_(owned))
+    )
+    await session.execute(
+        delete(Import).where(Import.bank_account_id.in_(owned))
     )
     await session.commit()
