@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
 from app.db.database import get_async_session
-from app.ml.transfer_detector import detect_transfers, unmark_transfer
+from app.ml.transfer_detector import detect_transfers, mark_transfer, unmark_transfer
 from app.models.bank_account import BankAccount, Import
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -39,6 +39,11 @@ class TransactionPatch(BaseModel):
     category_id: uuid.UUID | None = None
     notes: str | None = None
     is_transfer: bool | None = None
+
+
+class TransferLinkRequest(BaseModel):
+    expense_id: uuid.UUID
+    income_id: uuid.UUID
 
 
 async def _owned_account_ids(user: User, session: AsyncSession) -> list[uuid.UUID]:
@@ -113,6 +118,52 @@ async def run_transfer_detection(
 ):
     pairs_found = await detect_transfers(user.id, session)
     return {"pairs_found": pairs_found}
+
+
+@router.post("/link-transfer", response_model=list[TransactionOut])
+async def link_transfer_pair(
+    payload: TransferLinkRequest,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    owned = await _owned_account_ids(user, session)
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.id.in_([payload.expense_id, payload.income_id]),
+            Transaction.bank_account_id.in_(owned),
+        )
+    )
+    txs = result.scalars().all()
+
+    if len(txs) != 2:
+        raise HTTPException(status_code=404, detail="One or both transactions not found")
+
+    tx_map = {tx.id: tx for tx in txs}
+    exp_tx = tx_map.get(payload.expense_id)
+    inc_tx = tx_map.get(payload.income_id)
+
+    if exp_tx.type != "expense" or inc_tx.type != "income":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="expense_id must be an expense transaction and income_id must be an income transaction",
+        )
+
+    if exp_tx.bank_account_id == inc_tx.bank_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Both transactions belong to the same account — a transfer requires two different accounts",
+        )
+
+    if exp_tx.is_transfer or inc_tx.is_transfer:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="One or both transactions are already part of a transfer pair — unlink them first",
+        )
+
+    await mark_transfer(payload.expense_id, payload.income_id, session)
+    await session.refresh(exp_tx)
+    await session.refresh(inc_tx)
+    return [exp_tx, inc_tx]
 
 
 @router.delete("/", status_code=status.HTTP_204_NO_CONTENT)

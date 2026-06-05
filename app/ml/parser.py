@@ -80,7 +80,23 @@ def _read_csv_robust(bio: BytesIO) -> pd.DataFrame | None:
                 except Exception:
                     continue
 
-    return best_df  # may be None if nothing useful found
+    if best_df is not None:
+        return best_df
+
+    # Headerless fallback — file has no recognisable column names in the first row
+    for encoding in _ENCODINGS:
+        for sep in _SEPARATORS:
+            try:
+                bio.seek(0)
+                df = pd.read_csv(bio, sep=sep, header=None, dtype=str, encoding=encoding)
+                if len(df.columns) < 3 or df.empty:
+                    continue
+                df.columns = [str(i) for i in range(len(df.columns))]
+                return df
+            except Exception:
+                continue
+
+    return None
 
 
 def _parse_csv(bio: BytesIO) -> list[dict]:

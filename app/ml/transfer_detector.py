@@ -71,6 +71,22 @@ async def detect_transfers(user_id: uuid.UUID, session: AsyncSession) -> int:
     return len(pairs)
 
 
+async def mark_transfer(
+    expense_id: uuid.UUID,
+    income_id: uuid.UUID,
+    session: AsyncSession,
+) -> uuid.UUID:
+    """Manually link two transactions as a transfer pair. Returns the new pair_id."""
+    pair_id = uuid.uuid4()
+    await session.execute(
+        update(Transaction)
+        .where(Transaction.id.in_([expense_id, income_id]))
+        .values(is_transfer=True, transfer_pair_id=pair_id)
+    )
+    await session.commit()
+    return pair_id
+
+
 async def unmark_transfer(transaction_id: uuid.UUID, session: AsyncSession) -> None:
     """Clear is_transfer and transfer_pair_id on both legs of a pair."""
     result = await session.execute(

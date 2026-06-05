@@ -151,7 +151,7 @@ def upload_page():
         return
     options  = {acc["name"]: acc["id"] for acc in accounts}
     selected = st.selectbox("Account", list(options.keys()))
-    uploaded = st.file_uploader("CSV or PDF statement", type=["csv", "pdf"])
+    uploaded = st.file_uploader("CSV, PDF or TXT statement", type=["csv", "pdf", "txt"])
     if uploaded and st.button("Upload"):
         resp = api(
             "post",
@@ -240,6 +240,7 @@ def transactions_page():
         flags = "⚠" if tx.get("is_anomaly") else ""
 
         rows.append({
+            "ID":          tx["id"],
             "Date":        tx["date"],
             "Account":     acc.get("name", "Unknown"),
             "Currency":    currency,
@@ -267,8 +268,82 @@ def transactions_page():
             color = "rgba(239, 68, 68, 0.18)"
         return [f"background-color: {color}"] * len(row)
 
-    st.dataframe(df.style.apply(_row_color, axis=1), use_container_width=True, hide_index=True)
+    st.dataframe(
+        df.style.apply(_row_color, axis=1),
+        use_container_width=True,
+        hide_index=True,
+        column_config={"ID": st.column_config.TextColumn("ID", width="small")},
+    )
     st.caption(f"{len(txs)} transaction(s)")
+
+    # ── Manual transfer linking ────────────────────────────────────────────────
+    import uuid as _uuid
+
+    with st.expander("Link / Unlink Transfers"):
+        st.caption("Click any ID cell in the table above to copy it, then paste below.")
+        st.subheader("Link as Transfer")
+        col_exp, col_inc = st.columns(2)
+        with col_exp:
+            exp_id_raw = st.text_input("Expense leg UUID", placeholder="Paste UUID…", key="link_exp")
+        with col_inc:
+            inc_id_raw = st.text_input("Income leg UUID", placeholder="Paste UUID…", key="link_inc")
+        if st.button("Link as Transfer", type="primary"):
+            try:
+                expense_uuid = str(_uuid.UUID(exp_id_raw.strip()))
+                income_uuid  = str(_uuid.UUID(inc_id_raw.strip()))
+            except ValueError:
+                st.error("One or both IDs are not valid UUIDs.")
+            else:
+                resp = api("post", "/transactions/link-transfer", json={
+                    "expense_id": expense_uuid,
+                    "income_id":  income_uuid,
+                })
+                if resp.status_code == 200:
+                    st.success("Transactions linked as a transfer pair.")
+                    st.rerun()
+                else:
+                    try:
+                        st.error(resp.json().get("detail", resp.text))
+                    except Exception:
+                        st.error(resp.text)
+
+        st.divider()
+        st.subheader("Unlink Transfer Pair")
+        seen_pairs: set[str] = set()
+        unlink_options: dict[str, str] = {}
+        for tx in txs:
+            if not tx["is_transfer"]:
+                continue
+            pid = tx.get("transfer_pair_id")
+            if not pid or pid in seen_pairs:
+                continue
+            seen_pairs.add(pid)
+            legs = pair_map.get(pid, [tx])
+            src = dst = ""
+            for leg in legs:
+                leg_name = account_info.get(leg["bank_account_id"], {}).get("name", "?")
+                if leg["type"] == "expense":
+                    src = leg_name
+                else:
+                    dst = leg_name
+            label = f"{tx['date']}  {src or '?'} → {dst or '?'}"
+            expense_leg = next((l for l in legs if l["type"] == "expense"), tx)
+            unlink_options[label] = expense_leg["id"]
+
+        if not unlink_options:
+            st.info("No transfer pairs in the current date range to unlink.")
+        else:
+            sel_pair = st.selectbox("Pair to unlink", list(unlink_options.keys()), key="unlink_pair")
+            if st.button("Unlink Transfer Pair"):
+                resp = api("patch", f"/transactions/{unlink_options[sel_pair]}", json={"is_transfer": False})
+                if resp.status_code == 200:
+                    st.success("Transfer pair unlinked.")
+                    st.rerun()
+                else:
+                    try:
+                        st.error(resp.json().get("detail", resp.text))
+                    except Exception:
+                        st.error(resp.text)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
