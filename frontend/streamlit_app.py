@@ -258,7 +258,16 @@ def transactions_page():
     if not df["Flags"].any():
         df = df.drop(columns=["Flags"])
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    def _row_color(row):
+        if "Transfer" in row["Type"]:
+            color = "rgba(234, 179, 8, 0.18)"
+        elif "Income" in row["Type"]:
+            color = "rgba(34, 197, 94, 0.18)"
+        else:
+            color = "rgba(239, 68, 68, 0.18)"
+        return [f"background-color: {color}"] * len(row)
+
+    st.dataframe(df.style.apply(_row_color, axis=1), use_container_width=True, hide_index=True)
     st.caption(f"{len(txs)} transaction(s)")
 
 
