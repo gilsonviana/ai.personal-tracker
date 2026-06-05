@@ -170,12 +170,21 @@ def upload_page():
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
+def _fmt_currency(cents: int, currency: str) -> str:
+    amount = cents / 100
+    symbols = {"BRL": "R$", "USD": "US$", "EUR": "€"}
+    symbol = symbols.get(currency, currency)
+    return f"{symbol} {amount:,.2f}"
+
+
 def transactions_page():
+    import pandas as pd
+
     st.header("Transactions")
 
     accounts_resp = api("get", "/accounts/")
-    account_names = {
-        acc["id"]: acc["name"]
+    account_info = {
+        acc["id"]: {"name": acc["name"], "currency": acc["currency"]}
         for acc in (accounts_resp.json() if accounts_resp.status_code == 200 else [])
     }
 
@@ -186,20 +195,66 @@ def transactions_page():
     resp = api("get", f"/transactions/?start={start}&end={end}&limit=500")
     txs  = resp.json() if resp.status_code == 200 else []
 
+    if not txs:
+        st.info("No transactions found for the selected period.")
+        return
+
+    # Build transfer-pair lookup so both legs are resolved in one pass
+    pair_map: dict[str, list[dict]] = {}
     for tx in txs:
+        pid = tx.get("transfer_pair_id")
+        if pid:
+            pair_map.setdefault(pid, []).append(tx)
+
+    rows = []
+    for tx in txs:
+        acc      = account_info.get(tx["bank_account_id"], {})
+        currency = acc.get("currency", "BRL")
+
+        # Type label
         if tx.get("is_transfer"):
-            icon = "↔"
+            type_label = "↔ Transfer"
         elif tx["type"] == "income":
-            icon = "+"
+            type_label = "↑ Income"
         else:
-            icon = "-"
-        anomaly_flag  = " [ANOMALY]"  if tx["is_anomaly"]        else ""
-        transfer_flag = " [TRANSFER]" if tx.get("is_transfer")   else ""
-        account_name  = account_names.get(tx["bank_account_id"], "Unknown account")
-        st.write(
-            f"{icon} **{tx['date']}** | {account_name} | {tx['description']} | "
-            f"{format_amount(tx['amount'])} | {tx['type']}{transfer_flag}{anomaly_flag}"
-        )
+            type_label = "↓ Expense"
+
+        # Transfer direction: "Account A → Account B"
+        transfer_dir = ""
+        pid = tx.get("transfer_pair_id")
+        if tx.get("is_transfer") and pid:
+            src = dst = ""
+            for leg in pair_map.get(pid, []):
+                leg_name = account_info.get(leg["bank_account_id"], {}).get("name", "?")
+                if leg["type"] == "expense":
+                    src = leg_name
+                else:
+                    dst = leg_name
+            transfer_dir = f"{src or '?'} → {dst or '?'}"
+
+        flags = "⚠" if tx.get("is_anomaly") else ""
+
+        rows.append({
+            "Date":        tx["date"],
+            "Account":     acc.get("name", "Unknown"),
+            "Currency":    currency,
+            "Description": tx["description"],
+            "Amount":      _fmt_currency(tx["amount"], currency),
+            "Type":        type_label,
+            "Transfer":    transfer_dir,
+            "Flags":       flags,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # Only show Transfer and Flags columns when they contain data
+    if not df["Transfer"].any():
+        df = df.drop(columns=["Transfer"])
+    if not df["Flags"].any():
+        df = df.drop(columns=["Flags"])
+
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(f"{len(txs)} transaction(s)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
