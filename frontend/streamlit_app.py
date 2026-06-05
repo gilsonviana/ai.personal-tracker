@@ -210,11 +210,24 @@ def transactions_page():
         for acc in (accounts_resp.json() if accounts_resp.status_code == 200 else [])
     }
 
-    col1, col2 = st.columns(2)
-    start = col1.date_input("From", value=datetime.date.today().replace(day=1))
-    end   = col2.date_input("To",   value=datetime.date.today())
+    today         = datetime.date.today()
+    last_of_prev  = today.replace(day=1) - datetime.timedelta(days=1)
+    first_of_prev = last_of_prev.replace(day=1)
 
-    resp = api("get", f"/transactions/?start={start}&end={end}&limit=500")
+    col1, col2, col3, col4 = st.columns(4)
+    start = col1.date_input("From", value=first_of_prev)
+    end   = col2.date_input("To",   value=last_of_prev)
+
+    acc_options = {"All accounts": None} | {a["name"]: aid for aid, a in account_info.items()}
+    sel_acc     = col3.selectbox("Account", list(acc_options.keys()))
+    selected_id = acc_options[sel_acc]
+
+    sel_type = col4.selectbox("Type", ["All", "Income", "Expense", "Transfer"])
+
+    url = f"/transactions/?start={start}&end={end}&limit=500"
+    if selected_id:
+        url += f"&account_id={selected_id}"
+    resp = api("get", url)
     txs  = resp.json() if resp.status_code == 200 else []
 
     if not txs:
@@ -228,8 +241,17 @@ def transactions_page():
         if pid:
             pair_map.setdefault(pid, []).append(tx)
 
+    if sel_type == "Income":
+        display_txs = [tx for tx in txs if tx["type"] == "income" and not tx["is_transfer"]]
+    elif sel_type == "Expense":
+        display_txs = [tx for tx in txs if tx["type"] == "expense" and not tx["is_transfer"]]
+    elif sel_type == "Transfer":
+        display_txs = [tx for tx in txs if tx["is_transfer"]]
+    else:
+        display_txs = txs
+
     rows = []
-    for tx in txs:
+    for tx in display_txs:
         acc      = account_info.get(tx["bank_account_id"], {})
         currency = acc.get("currency", "BRL")
 
@@ -291,7 +313,7 @@ def transactions_page():
         hide_index=True,
         column_config={"ID": st.column_config.TextColumn("ID", width="small")},
     )
-    st.caption(f"{len(txs)} transaction(s)")
+    st.caption(f"{len(display_txs)} of {len(txs)} transaction(s)")
 
     # ── Manual transfer linking ────────────────────────────────────────────────
     import uuid as _uuid
@@ -337,14 +359,16 @@ def transactions_page():
             seen_pairs.add(pid)
             legs = pair_map.get(pid, [tx])
             src = dst = ""
+            expense_leg = next((l for l in legs if l["type"] == "expense"), tx)
             for leg in legs:
                 leg_name = account_info.get(leg["bank_account_id"], {}).get("name", "?")
                 if leg["type"] == "expense":
                     src = leg_name
                 else:
                     dst = leg_name
-            label = f"{tx['date']}  {src or '?'} → {dst or '?'}"
-            expense_leg = next((l for l in legs if l["type"] == "expense"), tx)
+            exp_currency = account_info.get(expense_leg["bank_account_id"], {}).get("currency", "BRL")
+            amt = _fmt_currency(expense_leg["amount"], exp_currency)
+            label = f"{expense_leg['date']}  {src or '?'} → {dst or '?'}  ({amt})"
             unlink_options[label] = expense_leg["id"]
 
         if not unlink_options:
