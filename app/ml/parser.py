@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+import re as _re
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 
 import pandas as pd
 import pdfplumber
+
+_log = logging.getLogger(__name__)
 
 
 def to_cents(raw_value: str) -> int:
@@ -24,7 +28,13 @@ def to_cents(raw_value: str) -> int:
     elif has_comma and not has_dot:
         # BR decimal only: "26,27" → "26.27"
         cleaned = cleaned.replace(",", ".")
-    # dot only ("26.27") or integer ("100") — already valid
+    elif has_dot and not has_comma:
+        # "2.500" or "1.234.567" → dot is a thousands separator (groups of 3)
+        # "2.50" or "26.27" → dot is a decimal separator
+        parts = cleaned.split(".")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3):
+            cleaned = cleaned.replace(".", "")
+    # integer ("100") — already valid
 
     decimal = Decimal(cleaned).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return int(decimal * 100)
@@ -51,6 +61,25 @@ def _col_score(columns: list[str]) -> int:
         _detect_col(cols, _DESC_KEYWORDS)   is not None,
         _detect_col(cols, _AMOUNT_KEYWORDS) is not None,
     ])
+
+
+def _detect_dayfirst(df: pd.DataFrame, date_col: str) -> bool:
+    """Infer whether dates are DD-MM-YYYY (True) or MM-DD-YYYY / YYYY-MM-DD (False)."""
+    for val in df[date_col].dropna().head(30):
+        s = str(val).strip()
+        if _re.match(r"^\d{4}[-/]", s):   # YYYY-... → ISO, month-first
+            return False
+        parts = _re.split(r"[-/.]", s)
+        if len(parts) >= 2:
+            try:
+                first, second = int(parts[0]), int(parts[1])
+                if first > 12:   # e.g. "25-12-2024" → day must be first
+                    return True
+                if second > 12:  # e.g. "01-15-2025" → day must be second
+                    return False
+            except (ValueError, IndexError):
+                continue
+    return True  # conservative default: assume day-first (BR convention)
 
 
 def _read_csv_robust(bio: BytesIO) -> pd.DataFrame | None:
@@ -121,6 +150,8 @@ def _parse_csv(bio: BytesIO) -> list[dict]:
     if not (date_col and desc_col and amount_col):
         return []
 
+    dayfirst = _detect_dayfirst(df, date_col)
+
     # Detect split credit/debit columns (e.g. Payoneer: "Credit amount" + "Debit amount")
     credit_col = next((c for c in cols if "credit" in c), None)
     debit_col  = next((c for c in cols if "debit"  in c), None)
@@ -131,7 +162,7 @@ def _parse_csv(bio: BytesIO) -> list[dict]:
     _OK_STATUSES = {"completed", "complete", "succeeded", "aprovado", "concluído", "concluido"}
 
     rows = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         try:
             # Status filter
             if status_col:
@@ -139,7 +170,7 @@ def _parse_csv(bio: BytesIO) -> list[dict]:
                 if status_val not in _OK_STATUSES:
                     continue
 
-            d = pd.to_datetime(row[date_col], dayfirst=True).date()
+            d = pd.to_datetime(row[date_col], dayfirst=dayfirst).date()
 
             if split_amounts:
                 # Each row has a credit column (income) and a debit column (expense)
@@ -173,7 +204,8 @@ def _parse_csv(bio: BytesIO) -> list[dict]:
             rows.append(
                 {"date": d, "description": str(row[desc_col]).strip(), "amount": cents, "type": tx_type}
             )
-        except Exception:
+        except Exception as exc:
+            _log.warning("parser: skipped row %s — %s | raw=%s", idx, exc, dict(row))
             continue
     return rows
 

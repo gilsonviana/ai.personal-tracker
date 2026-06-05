@@ -123,8 +123,20 @@ budgets
 from decimal import Decimal, ROUND_HALF_UP
 
 def to_cents(raw_value: str) -> int:
-    cleaned = raw_value.strip().replace(" ", "").lstrip("-")
-    cleaned = cleaned.replace(".", "").replace(",", ".")  # BR format → standard
+    cleaned = str(raw_value).strip().replace(" ", "").lstrip("-")
+    has_comma, has_dot = "," in cleaned, "." in cleaned
+    if has_comma and has_dot:
+        # Whichever separator appears last is the decimal separator
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")  # BR: "1.234,56"
+        else:
+            cleaned = cleaned.replace(",", "")                    # US: "1,234.56"
+    elif has_comma and not has_dot:
+        cleaned = cleaned.replace(",", ".")                       # "26,27" → "26.27"
+    elif has_dot and not has_comma:
+        parts = cleaned.split(".")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3):
+            cleaned = cleaned.replace(".", "")  # "2.500" → 2500 (thousands sep)
     decimal = Decimal(cleaned).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return int(decimal * 100)
 ```

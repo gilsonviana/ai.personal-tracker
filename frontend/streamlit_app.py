@@ -106,12 +106,43 @@ def dashboard_page():
 
     if summaries:
         import pandas as pd
+        import plotly.graph_objects as go
+
+        _COLOR_INCOME  = "rgb(34, 197, 94)"
+        _COLOR_EXPENSE = "rgb(239, 68, 68)"
+        _COLOR_NET     = "rgb(234, 179, 8)"
 
         df = pd.DataFrame(summaries).sort_values("period")
         df["Income (R$)"]   = df["total_income"]   / 100
         df["Expenses (R$)"] = df["total_expenses"] / 100
+        df["Net (R$)"]      = df["Income (R$)"] - df["Expenses (R$)"]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="Income",
+            x=df["period"], y=df["Income (R$)"],
+            marker_color=_COLOR_INCOME,
+        ))
+        fig.add_trace(go.Bar(
+            name="Expenses",
+            x=df["period"], y=df["Expenses (R$)"],
+            marker_color=_COLOR_EXPENSE,
+        ))
+        fig.add_trace(go.Scatter(
+            name="Net",
+            x=df["period"], y=df["Net (R$)"],
+            mode="lines+markers",
+            line=dict(color=_COLOR_NET, width=2),
+            marker=dict(size=6),
+        ))
+        fig.update_layout(
+            barmode="group",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=0, r=0, t=30, b=0),
+            yaxis_tickprefix="R$ ",
+        )
         st.subheader(f"Income vs Expenses — {period_label}")
-        st.line_chart(df.set_index("period")[["Income (R$)", "Expenses (R$)"]])
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No transactions found for the selected period.")
 
