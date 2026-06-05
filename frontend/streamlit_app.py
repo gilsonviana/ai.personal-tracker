@@ -124,11 +124,28 @@ def accounts_page():
     accounts = resp.json() if resp.status_code == 200 else []
 
     for acc in accounts:
-        col1, col2 = st.columns([4, 1])
-        col1.write(f"**{acc['name']}** — {acc['bank_name'] or 'N/A'} ({acc['currency']})")
-        if col2.button("Delete", key=f"del_{acc['id']}"):
-            api("delete", f"/accounts/{acc['id']}")
-            st.rerun()
+        with st.expander(f"{acc['name']} — {acc['bank_name'] or 'N/A'} ({acc['currency']})"):
+            imp_resp = api("get", f"/accounts/{acc['id']}/imports")
+            imports  = imp_resp.json() if imp_resp.status_code == 200 else []
+            if imports:
+                import pandas as pd
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "File":     imp["filename"],
+                            "Rows":     imp["row_count"],
+                            "Uploaded": imp["created_at"][:10],
+                        }
+                        for imp in imports
+                    ]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No files uploaded yet.")
+            if st.button("Delete Account", key=f"del_{acc['id']}", type="secondary"):
+                api("delete", f"/accounts/{acc['id']}")
+                st.rerun()
 
     st.subheader("New Account")
     with st.form("new_account"):

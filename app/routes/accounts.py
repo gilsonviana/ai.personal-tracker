@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
 from app.db.database import get_async_session
-from app.models.bank_account import BankAccount
+from app.models.bank_account import BankAccount, Import
 from app.models.user import User
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -27,6 +27,15 @@ class AccountOut(BaseModel):
     name: str
     bank_name: str | None
     currency: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ImportOut(BaseModel):
+    id: uuid.UUID
+    filename: str
+    row_count: int
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -54,6 +63,28 @@ async def create_account(
     await session.commit()
     await session.refresh(account)
     return account
+
+
+@router.get("/{account_id}/imports", response_model=list[ImportOut])
+async def list_imports(
+    account_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    result = await session.execute(
+        select(BankAccount).where(
+            BankAccount.id == account_id, BankAccount.user_id == user.id
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    result = await session.execute(
+        select(Import)
+        .where(Import.bank_account_id == account_id)
+        .order_by(Import.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
