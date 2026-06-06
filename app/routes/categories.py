@@ -25,6 +25,7 @@ class CategoryOut(BaseModel):
     user_id: uuid.UUID | None
     name: str
     type: str
+    exclude_from_insights: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -33,6 +34,10 @@ class CategoryOut(BaseModel):
 class CategoryCreate(BaseModel):
     name: str
     type: Literal["income", "expense"]
+
+
+class CategoryPatch(BaseModel):
+    exclude_from_insights: bool
 
 
 class RetrainResult(BaseModel):
@@ -69,6 +74,28 @@ async def create_category(
         raise HTTPException(status_code=409, detail="A category with this name already exists.")
     cat = Category(user_id=user.id, name=payload.name, type=payload.type)
     session.add(cat)
+    await session.commit()
+    await session.refresh(cat)
+    return cat
+
+
+@router.patch("/{category_id}", response_model=CategoryOut)
+async def patch_category(
+    category_id: uuid.UUID,
+    payload: CategoryPatch,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    result = await session.execute(
+        select(Category).where(
+            Category.id == category_id,
+            Category.user_id.is_(None) | (Category.user_id == user.id),
+        )
+    )
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found.")
+    cat.exclude_from_insights = payload.exclude_from_insights
     await session.commit()
     await session.refresh(cat)
     return cat

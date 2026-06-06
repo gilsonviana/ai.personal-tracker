@@ -643,33 +643,59 @@ def categories_page():
         return
     categories = resp.json()
 
-    system_cats = [c for c in categories if c.get("user_id") is None]
-    user_cats   = [c for c in categories if c.get("user_id") is not None]
+    user_cats = [c for c in categories if c.get("user_id") is not None]
 
-    # ── System categories ──────────────────────────────────────────────────────
-    st.subheader("System Categories")
-    st.caption("Built-in categories used by the auto-categoriser. These cannot be modified.")
-    sys_income  = [{"Name": c["name"]} for c in system_cats if c["type"] == "income"]
-    sys_expense = [{"Name": c["name"]} for c in system_cats if c["type"] == "expense"]
-    col_inc, col_exp = st.columns(2)
-    with col_inc:
-        st.markdown("**Income**")
-        st.dataframe(pd.DataFrame(sys_income), hide_index=True, use_container_width=True)
-    with col_exp:
-        st.markdown("**Expense**")
-        st.dataframe(pd.DataFrame(sys_expense), hide_index=True, use_container_width=True)
+    # ── Unified category table ─────────────────────────────────────────────────
+    st.caption(
+        "Toggle **In Insights** to include or exclude a category from the insight graphs and health score. "
+        "System categories cannot be deleted, but can be excluded."
+    )
+    all_cats = sorted(categories, key=lambda c: (c["type"], c["name"]))
+    rows = [
+        {
+            "Name": c["name"],
+            "Type": c["type"].capitalize(),
+            "Source": "System" if c["user_id"] is None else "Custom",
+            "In Insights": not c["exclude_from_insights"],
+        }
+        for c in all_cats
+    ]
+    df = pd.DataFrame(rows)
+    df_original = df.copy()
 
-    # ── User categories ────────────────────────────────────────────────────────
-    st.subheader("Your Categories")
-    if not user_cats:
-        st.info("You haven't added any custom categories yet.")
-    else:
-        st.dataframe(
-            pd.DataFrame([{"Name": c["name"], "Type": c["type"].capitalize()} for c in user_cats]),
-            hide_index=True,
-            use_container_width=True,
-        )
-        with st.expander("Delete a category"):
+    edited_df = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["Name", "Type", "Source"],
+        column_config={
+            "In Insights": st.column_config.CheckboxColumn("In Insights", default=True),
+        },
+        key="cat_editor",
+    )
+
+    changed = edited_df[edited_df["In Insights"] != df_original["In Insights"]]
+    if not changed.empty:
+        errors, successes = [], []
+        for idx in changed.index:
+            cat = all_cats[idx]
+            excluded = not bool(edited_df.at[idx, "In Insights"])
+            resp = api("patch", f"/categories/{cat['id']}", json={"exclude_from_insights": excluded})
+            if resp.status_code == 200:
+                successes.append(cat["name"])
+            else:
+                errors.append(f"{cat['name']}: {resp.json().get('detail', resp.text)}")
+        if successes:
+            st.success(f"Updated: {', '.join(successes)}")
+        if errors:
+            st.error("Failed to update:\n" + "\n".join(errors))
+        if successes:
+            st.rerun()
+
+    # ── Delete user category ───────────────────────────────────────────────────
+    if user_cats:
+        with st.expander("Delete a custom category"):
             cat_to_delete = st.selectbox(
                 "Select category",
                 [c["name"] for c in user_cats],

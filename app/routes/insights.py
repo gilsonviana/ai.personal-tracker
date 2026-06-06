@@ -79,6 +79,10 @@ async def monthly_insights(
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(Transaction.bank_account_id.in_(ids))
         .where(Transaction.is_transfer.is_(False))
+        .where(
+            Transaction.category_id.is_(None)
+            | Category.exclude_from_insights.is_(False)
+        )
     )
 
     today = date.today()
