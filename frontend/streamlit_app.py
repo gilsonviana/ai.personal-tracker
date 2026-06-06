@@ -401,7 +401,7 @@ def transactions_page():
 
         flags = "⚠" if tx.get("is_anomaly") else ""
 
-        cat_name = cat_id_to_name.get(tx.get("category_id") or "", "") or "—"
+        cat_name = cat_id_to_name.get(tx.get("category_id") or "", "") or "— none —"
 
         rows.append({
             "ID":          tx["id"],
@@ -424,28 +424,51 @@ def transactions_page():
     if not df["Flags"].any():
         df = df.drop(columns=["Flags"])
 
-    def _row_color(row):
-        if "Transfer" in row["Type"]:
-            color = "rgba(234, 179, 8, 0.18)"
-        elif "Income" in row["Type"]:
-            color = "rgba(34, 197, 94, 0.18)"
-        else:
-            color = "rgba(239, 68, 68, 0.18)"
-        return [f"background-color: {color}"] * len(row)
+    df_original = df.copy()
 
-    st.dataframe(
-        df.style.apply(_row_color, axis=1),
+    edited_df = st.data_editor(
+        df,
         use_container_width=True,
         hide_index=True,
-        column_config={"ID": st.column_config.TextColumn("ID", width="small")},
+        num_rows="fixed",
+        disabled=["ID", "Date", "Account", "Currency", "Description", "Amount", "Type", "Transfer", "Flags"],
+        column_config={
+            "ID": st.column_config.TextColumn("ID", width="small"),
+            "Category": st.column_config.SelectboxColumn(
+                "Category",
+                options=cat_names_by_type["all"],
+                required=True,
+            ),
+        },
     )
+
+    changed_rows = edited_df[edited_df["Category"] != df_original["Category"]]
+    if not changed_rows.empty:
+        errors, successes = [], []
+        for _, row in changed_rows.iterrows():
+            tx_id = row["ID"]
+            new_cat = row["Category"]
+            new_cat_id = cat_name_to_id.get(new_cat) if new_cat != "— none —" else None
+            resp = api("patch", f"/transactions/{tx_id}", json={"category_id": str(new_cat_id) if new_cat_id else None})
+            if resp.status_code == 200:
+                successes.append(tx_id)
+            else:
+                errors.append(f"{tx_id}: {resp.json().get('detail', resp.text)}")
+        if successes:
+            st.success(f"Category updated for {len(successes)} transaction(s).")
+        if errors:
+            st.error("Failed to update:\n" + "\n".join(errors))
+        if successes:
+            st.rerun()
+
     st.caption(f"{len(display_txs)} of {len(txs)} transaction(s)")
+    st.caption("↑ Income   ↓ Expense   ↔ Transfer")
 
     # ── Edit category ─────────────────────────────────────────────────────────
     import uuid as _uuid
 
     with st.expander("Edit Category"):
-        st.caption("Paste one or more transaction IDs (comma-separated) from the table above, then pick the correct category.")
+        st.caption("For bulk edits: paste multiple transaction IDs (comma-separated) and assign them the same category at once. Single-row edits can be done directly in the table above.")
         tx_id_raw = st.text_input("Transaction UUID(s)", placeholder="Paste one or more UUIDs separated by commas…", key="cat_tx_id")
         matched_type = "all"
         valid_uuids = []
