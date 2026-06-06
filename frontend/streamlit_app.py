@@ -149,9 +149,11 @@ def insight_page():
         if st.button("Convert currency values", key="insight_convert"):
             fx_resp = api("post", "/fx/sync")
             if fx_resp.status_code == 200:
-                n = fx_resp.json().get("rates_fetched", 0)
-                st.success(f"Fetched {n} exchange rate(s).")
-                st.rerun()
+                fx_data = fx_resp.json()
+                if fx_data.get("error"):
+                    st.error(f"Could not fetch exchange rates: {fx_data['error']}")
+                else:
+                    st.rerun()
             else:
                 st.error("Failed to fetch exchange rates.")
 
@@ -285,10 +287,13 @@ def upload_page():
         if st.button("Convert currency values", key="upload_convert"):
             fx_resp = api("post", f"/fx/sync?import_id={pending_import}")
             if fx_resp.status_code == 200:
-                n = fx_resp.json().get("rates_fetched", 0)
-                st.success(f"Fetched {n} exchange rate(s). Transactions will now appear in your reports.")
-                st.session_state.pop("pending_fx_import_id", None)
-                st.session_state.pop("pending_fx_currency", None)
+                fx_data = fx_resp.json()
+                if fx_data.get("error"):
+                    st.error(f"Could not fetch exchange rates: {fx_data['error']}")
+                else:
+                    st.session_state.pop("pending_fx_import_id", None)
+                    st.session_state.pop("pending_fx_currency", None)
+                    st.rerun()
             else:
                 st.error("Failed to fetch exchange rates. Please try again.")
         elif resp.status_code == 409:

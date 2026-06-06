@@ -22,6 +22,7 @@ router = APIRouter(prefix="/fx", tags=["fx"])
 
 class SyncResult(BaseModel):
     rates_fetched: int
+    error: str | None = None
 
 
 @router.post("/sync", response_model=SyncResult)
@@ -51,6 +52,7 @@ async def sync_fx_rates(
         dates_by_currency[row.currency].add(row.date)
 
     total_fetched = 0
+    errors: list[str] = []
     for from_currency, all_dates in dates_by_currency.items():
         # Only fetch dates not already cached
         existing = {
@@ -67,8 +69,14 @@ async def sync_fx_rates(
         }
         missing = list(all_dates - existing)
         if missing:
-            fetched = await fetch_and_cache_rates(session, missing, from_currency, main_currency)
-            total_fetched += fetched
+            try:
+                fetched = await fetch_and_cache_rates(session, missing, from_currency, main_currency)
+                total_fetched += fetched
+            except RuntimeError as exc:
+                errors.append(str(exc))
 
     await session.commit()
-    return SyncResult(rates_fetched=total_fetched)
+    return SyncResult(
+        rates_fetched=total_fetched,
+        error="; ".join(errors) if errors else None,
+    )

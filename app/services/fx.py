@@ -55,8 +55,7 @@ async def fetch_and_cache_rates(
             resp.raise_for_status()
             data = resp.json()
     except Exception as exc:
-        _log.warning("FX fetch failed for %s: %s", pair, exc)
-        return 0
+        raise RuntimeError(f"Exchange rate API unavailable for {pair}: {exc}") from exc
 
     # Parse API response into {date: rate}
     available: dict[date, Decimal] = {}
@@ -72,13 +71,20 @@ async def fetch_and_cache_rates(
 
     sorted_avail = sorted(available.keys())
 
-    # For each requested date, use most recent rate on or before that date
+    # For each requested date, use most recent rate on or before that date.
+    # If the transaction date is before the earliest API record (e.g. a weekend
+    # right at the boundary of the query window), fall back to the earliest
+    # available rate rather than skipping the date permanently.
     to_insert: list[dict] = []
     for d in dates:
         idx = bisect.bisect_right(sorted_avail, d) - 1
         if idx < 0:
-            continue  # no rate available before this date
-        rate_day = sorted_avail[idx]
+            if sorted_avail:
+                rate_day = sorted_avail[0]
+            else:
+                continue
+        else:
+            rate_day = sorted_avail[idx]
         to_insert.append({
             "id": __import__("uuid").uuid4(),
             "rate_date": d,
