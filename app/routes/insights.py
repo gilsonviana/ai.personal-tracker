@@ -14,6 +14,7 @@ from app.db.database import get_async_session
 from app.ml.reflection import get_reflection
 from app.ml.scoring import compute_score
 from app.models.bank_account import BankAccount
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.fx import get_or_create_prefs, get_rate_for_date, load_rates
@@ -60,11 +61,13 @@ async def monthly_insights(
     prefs = await get_or_create_prefs(user.id, session)
     main_currency = prefs.main_currency
 
-    # Group by (date, currency) to allow per-date FX conversion
+    # Group by (date, currency, category) to allow per-date FX conversion and
+    # per-category expense breakdown for the LLM narrative.
     q = (
         select(
             Transaction.date,
             BankAccount.currency,
+            Category.name.label("category_name"),
             func.sum(
                 case((Transaction.type == "income", Transaction.amount), else_=0)
             ).label("total_income"),
@@ -73,6 +76,7 @@ async def monthly_insights(
             ).label("total_expenses"),
         )
         .join(BankAccount, Transaction.bank_account_id == BankAccount.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
         .where(Transaction.bank_account_id.in_(ids))
         .where(Transaction.is_transfer.is_(False))
     )
@@ -91,7 +95,7 @@ async def monthly_insights(
             y -= 1
         q = q.where(Transaction.date >= date(y, m, 1))
 
-    q = q.group_by(Transaction.date, BankAccount.currency).order_by(Transaction.date)
+    q = q.group_by(Transaction.date, BankAccount.currency, Category.name).order_by(Transaction.date)
 
     rows = (await session.execute(q)).all()
 
@@ -99,24 +103,35 @@ async def monthly_insights(
     non_main = {r.currency for r in rows if r.currency != main_currency}
     rates_by_currency = await load_rates(session, non_main, main_currency)
 
-    # Aggregate into period buckets (YYYY-MM) in main currency
+    # Aggregate into period buckets (YYYY-MM) in main currency.
+    # Also track per-category expense totals so the LLM narrative can name
+    # specific categories that caused expense spikes.
     period_income: dict[str, int] = defaultdict(int)
     period_expenses: dict[str, int] = defaultdict(int)
+    period_cat_expenses: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     has_unconverted = False
 
     for row in rows:
         period = row.date.strftime("%Y-%m")
+        cat = row.category_name or "Uncategorized"
 
         if row.currency == main_currency:
             period_income[period] += row.total_income or 0
-            period_expenses[period] += row.total_expenses or 0
+            exp = row.total_expenses or 0
+            period_expenses[period] += exp
+            if exp:
+                period_cat_expenses[period][cat] += exp
         else:
             rate = get_rate_for_date(rates_by_currency.get(row.currency, []), row.date)
             if rate is None:
                 has_unconverted = True
                 continue  # exclude rows without a rate rather than distort totals
-            period_income[period] += int((row.total_income or 0) * rate)
-            period_expenses[period] += int((row.total_expenses or 0) * rate)
+            converted_inc = int((row.total_income or 0) * rate)
+            converted_exp = int((row.total_expenses or 0) * rate)
+            period_income[period] += converted_inc
+            period_expenses[period] += converted_exp
+            if converted_exp:
+                period_cat_expenses[period][cat] += converted_exp
 
     all_periods = sorted(set(period_income) | set(period_expenses))
     summaries = [
@@ -130,7 +145,8 @@ async def monthly_insights(
     ]
 
     score = compute_score(summaries)
-    narrative = await get_reflection(summaries, score)
+    cat_expenses = {p: dict(cats) for p, cats in period_cat_expenses.items()}
+    narrative = await get_reflection(summaries, score, cat_expenses, main_currency)
     return InsightResponse(
         summaries=summaries,
         score=score,
