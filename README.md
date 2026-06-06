@@ -8,11 +8,16 @@ Privacy-first personal finance analyser. Upload your bank statements and get ML-
 
 - **Statement ingestion** — upload CSV or PDF bank statements
 - **Auto-categorisation** — TF-IDF + Logistic Regression classifier trained on EN/PT transaction descriptions
+- **Inline category editing** — click any category cell in the transactions table to reassign it; bulk-assign via comma-separated UUIDs
+- **Category management** — create and delete custom categories; toggle any category's inclusion in insights and graphs
+- **Transfer detection** — automatically pairs internal transfers across accounts to avoid double-counting
 - **Anomaly detection** — Isolation Forest flags unusual spending per category
-- **Financial health score** — savings-rate-based score across the last 12 months
+- **Financial health score** — savings-rate-based score across the last 12 months; excluded categories are omitted from the calculation
 - **LLM narrative** — Ollama (mistral:7b) generates a plain-English summary of your finances
+- **Multi-currency** — FX rates are fetched and stored locally; all amounts are normalised to a configurable main currency for insights
 - **JWT auth** — every resource is scoped to the authenticated user; nothing leaks across accounts
-- **Streamlit UI** — browser dashboard for uploads, charts, and transaction review
+- **Streamlit UI** — browser dashboard with pages for transactions, categories, accounts, uploads, assets, budgets, and insights
+- **Automated backups** — daily `pg_dump` via shell script with configurable retention and a guided restore script
 
 ---
 
@@ -105,27 +110,37 @@ finsight/
 │   ├── models/               # SQLAlchemy ORM models
 │   │   ├── user.py
 │   │   ├── bank_account.py   # BankAccount + Import
-│   │   ├── transaction.py
-│   │   └── category.py
+│   │   ├── transaction.py    # is_transfer, transfer_pair_id fields
+│   │   ├── category.py       # user_id (null = system), exclude_from_insights
+│   │   ├── preferences.py    # Per-user main_currency setting
+│   │   └── fx_rate.py        # Cached FX rates by date pair
 │   ├── routes/
 │   │   ├── auth.py           # User schemas (UserRead/Create/Update)
 │   │   ├── accounts.py       # CRUD for bank accounts
 │   │   ├── uploads.py        # CSV/PDF upload → transactions
-│   │   ├── transactions.py   # List + patch transactions
-│   │   └── insights.py       # Monthly aggregation + score + narrative
+│   │   ├── transactions.py   # List, patch, bulk-patch, transfer ops
+│   │   ├── categories.py     # CRUD + retrain + insight exclusion toggle
+│   │   ├── insights.py       # Monthly aggregation + score + narrative
+│   │   ├── preferences.py    # Get/update user preferences
+│   │   └── fx.py             # FX rate sync
 │   ├── ml/
 │   │   ├── parser.py         # CSV and PDF statement parser
-│   │   ├── categoriser.py    # TF-IDF + LR classifier
+│   │   ├── categoriser.py    # TF-IDF + LR classifier (shared + per-user)
 │   │   ├── anomaly.py        # Isolation Forest per category
 │   │   ├── scoring.py        # Savings-rate health score
-│   │   └── reflection.py     # Ollama narrative generation
+│   │   ├── transfer_detector.py  # Auto-pairs internal transfers
+│   │   └── reflection.py    # Ollama narrative generation
 │   └── services/
-│       └── seed.py           # Seeds system-default categories on startup
+│       ├── seed.py           # Seeds system-default categories on startup
+│       └── fx.py             # FX fetch + caching logic
 ├── alembic/                  # Migration scripts
 ├── frontend/
-│   └── streamlit_app.py      # Streamlit UI
+│   └── streamlit_app.py      # Streamlit UI (all pages in one file)
 ├── training/
 │   └── train_categoriser.py  # Trains and saves the categoriser model
+├── scripts/
+│   ├── backup.sh             # pg_dump + gzip + rotation
+│   └── restore.sh            # Guided restore from a .sql.gz backup
 ├── models/                   # Serialised .joblib model files (git-ignored)
 ├── docker-compose.yml
 ├── Dockerfile
@@ -134,24 +149,29 @@ finsight/
 
 ---
 
+## UI Pages
+
+| Page | Description |
+|---|---|
+| **Transactions** | Filterable table (date, account, type, category) with inline category editing; bulk-assign categories via UUID list |
+| **Categories** | Unified table of system + custom categories; toggle inclusion in insights; create and delete custom categories |
+| **Accounts** | Bank account CRUD |
+| **Upload** | CSV / PDF statement upload |
+| **Insight** | Health score, LLM narrative, income vs expenses chart |
+| **Preferences** | Set main display currency |
+
+---
+
 ## Training the Categoriser
 
-The categoriser ships with 20 built-in seed samples (EN + PT). To train on your own labelled data, create `training/labelled_data.json`:
-
-```json
-[
-  { "description": "SUPERMERCADO EXTRA", "category": "Food & Groceries" },
-  { "description": "UBER TRIP", "category": "Transport" }
-]
-```
-
-Then run:
+The categoriser ships with 160 built-in seed samples covering 14 categories in English and Portuguese. To retrain on your own labelled history, assign categories to your transactions and use the **Retrain** button on the Transactions page, or call the API directly:
 
 ```bash
-docker compose exec api python training/train_categoriser.py
+curl -X POST http://localhost:8000/categories/retrain \
+  -H "Authorization: Bearer <token>"
 ```
 
-The trained model is saved to `models/categoriser.joblib` and loaded automatically at API startup.
+The personal model is saved to `models/categoriser_<user_id>.joblib` and used in preference to the shared model on future uploads.
 
 ---
 
@@ -164,6 +184,44 @@ The trained model is saved to `models/categoriser.joblib` and loaded automatical
 | `ALGORITHM` | `HS256` | JWT algorithm |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Token lifetime |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
+| `FINSIGHT_BACKUP_KEEP_DAYS` | `30` | Days of backup files to retain (used by `scripts/backup.sh`) |
+
+---
+
+## Backups
+
+Data is stored in the `pgdata` Docker named volume. The backup scripts use `pg_dump` inside the running container — no Postgres client tools required on the host.
+
+**Manual backup:**
+
+```bash
+bash scripts/backup.sh
+# → backups/finsight_YYYYMMDD_HHMMSS.sql.gz
+```
+
+**Restore from a backup:**
+
+```bash
+bash scripts/restore.sh backups/finsight_20260606_020000.sql.gz
+```
+
+The restore script drops and recreates the database, then streams the dump in. It prompts for confirmation before making any changes.
+
+**Schedule daily backups (cron):**
+
+```bash
+crontab -e
+```
+
+Add:
+
+```
+0 2 * * * /path/to/finsight/scripts/backup.sh >> /path/to/finsight/backups/backup.log 2>&1
+```
+
+Backups older than `FINSIGHT_BACKUP_KEEP_DAYS` (default 30) are removed automatically after each run. The `backups/` directory is git-ignored.
+
+> **macOS note:** `cron` requires Full Disk Access for the terminal app. If jobs run silently without output, grant access in **System Settings → Privacy & Security → Full Disk Access**.
 
 ---
 
@@ -179,9 +237,19 @@ All routes except `/auth/register` and `/auth/jwt/login` require a `Bearer` toke
 | `POST` | `/accounts/` | Create bank account |
 | `DELETE` | `/accounts/{id}` | Delete bank account |
 | `POST` | `/uploads/{account_id}` | Upload CSV or PDF statement |
-| `GET` | `/transactions/` | List transactions (filterable) |
-| `PATCH` | `/transactions/{id}` | Update category / notes |
+| `GET` | `/transactions/` | List transactions (date, account filters) |
+| `PATCH` | `/transactions/{id}` | Update category / notes / transfer flag |
+| `PATCH` | `/transactions/bulk-category` | Assign one category to multiple transactions |
+| `POST` | `/transactions/detect-transfers` | Auto-detect internal transfers |
+| `POST` | `/transactions/link-transfer` | Manually link an expense/income pair as a transfer |
+| `GET` | `/categories/` | List system + user categories |
+| `POST` | `/categories/` | Create a custom category |
+| `PATCH` | `/categories/{id}` | Toggle `exclude_from_insights` |
+| `DELETE` | `/categories/{id}` | Delete a custom category |
+| `POST` | `/categories/retrain` | Retrain personal categoriser from labelled transactions |
 | `GET` | `/insights/monthly` | Monthly summaries + score + narrative |
+| `GET` | `/preferences/` | Get user preferences |
+| `PATCH` | `/preferences/` | Update main currency |
 
 Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -189,7 +257,7 @@ Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs
 
 ## Financial Health Score
 
-The score is a number from **0 to 100** that reflects how well you are saving money across the selected period. It is computed per month and then averaged.
+The score is a number from **0 to 100** that reflects how well you are saving money across the selected period. It is computed per month and then averaged. Transactions belonging to categories marked as **excluded from insights** are not counted.
 
 ### How it is calculated
 
@@ -209,39 +277,11 @@ final_score   = average(monthly_scores) × 100
 
 | Score | What it means |
 |---|---|
-| **85 – 100** | Excellent. You consistently save 25–30 %+ of your income. You are building wealth and have a strong financial buffer. |
-| **60 – 84** | Good. You save on average 18–25 % of your income. Some months are better than others but the trend is positive. |
-| **35 – 59** | Fair. Savings are inconsistent — some months you save well, others you break even or overspend. |
-| **10 – 34** | Weak. Most months your expenses consume nearly all your income, leaving little room for savings or emergencies. |
-| **0 – 9** | Critical. You are regularly spending more than you earn. Immediate review of recurring expenses is recommended. |
-
-### Examples
-
-**High score — 91.7**
-
-| Month | Income | Expenses | Savings rate | Monthly score |
-|---|---|---|---|---|
-| 2025-01 | R$ 10,000 | R$ 6,500 | 35 % | 1.00 |
-| 2025-02 | R$ 10,000 | R$ 6,800 | 32 % | 1.00 |
-| 2025-03 | R$ 10,000 | R$ 7,500 | 25 % | 0.83 |
-
-Average score: `(1.00 + 1.00 + 0.83) / 3 × 100 = 94.4`
-
-A person earning R$ 10,000/month and spending around R$ 7,000 consistently qualifies for a high score. Even one month of higher spending only reduces the score slightly.
-
----
-
-**Low score — 18.3**
-
-| Month | Income | Expenses | Savings rate | Monthly score |
-|---|---|---|---|---|
-| 2025-01 | R$ 10,000 | R$ 9,800 | 2 % | 0.07 |
-| 2025-02 | R$ 10,000 | R$ 11,200 | −12 % | 0.00 |
-| 2025-03 | R$ 10,000 | R$ 9,400 | 6 % | 0.20 |
-
-Average score: `(0.07 + 0.00 + 0.20) / 3 × 100 = 9.0`
-
-A person who consistently spends close to — or beyond — their entire income will score near 0. A single month where expenses exceed income contributes 0 to the average, pulling the score down significantly.
+| **85 – 100** | Excellent. You consistently save 25–30 %+ of your income. |
+| **60 – 84** | Good. You save on average 18–25 % of your income. |
+| **35 – 59** | Fair. Savings are inconsistent — some months you break even or overspend. |
+| **10 – 34** | Weak. Most months your expenses consume nearly all your income. |
+| **0 – 9** | Critical. You are regularly spending more than you earn. |
 
 ---
 
@@ -256,4 +296,4 @@ All amounts are stored as **integers in cents** (always positive). The transacti
 
 ## Privacy
 
-No data leaves your machine. Postgres, the API, and the ML models all run locally in Docker. Ollama also runs locally. The only network calls are between your browser and `localhost`.
+No data leaves your machine. Postgres, the API, and the ML models all run locally in Docker. Ollama also runs locally. The only network calls are between your browser and `localhost`, and outbound FX rate fetches if multi-currency support is enabled.
