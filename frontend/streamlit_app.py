@@ -337,7 +337,7 @@ def transactions_page():
     last_of_prev  = today.replace(day=1) - datetime.timedelta(days=1)
     first_of_prev = last_of_prev.replace(day=1)
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     start = col1.date_input("From", value=first_of_prev)
     end   = col2.date_input("To",   value=last_of_prev)
 
@@ -346,6 +346,14 @@ def transactions_page():
     selected_id = acc_options[sel_acc]
 
     sel_type = col4.selectbox("Type", ["All", "Income", "Expense", "Transfer"])
+
+    if sel_type == "Income":
+        cat_filter_options = ["All categories", "— none —"] + [c["name"] for c in categories if c["type"] == "income"]
+    elif sel_type == "Expense":
+        cat_filter_options = ["All categories", "— none —"] + [c["name"] for c in categories if c["type"] == "expense"]
+    else:
+        cat_filter_options = ["All categories", "— none —"] + [c["name"] for c in categories]
+    sel_cat = col5.selectbox("Category", cat_filter_options)
 
     url = f"/transactions/?start={start}&end={end}"
     if selected_id:
@@ -372,6 +380,13 @@ def transactions_page():
         display_txs = [tx for tx in txs if tx["is_transfer"]]
     else:
         display_txs = txs
+
+    if sel_cat != "All categories":
+        if sel_cat == "— none —":
+            display_txs = [tx for tx in display_txs if not tx.get("category_id")]
+        else:
+            target_cat_id = cat_name_to_id.get(sel_cat)
+            display_txs = [tx for tx in display_txs if tx.get("category_id") == target_cat_id]
 
     rows = []
     for tx in display_txs:
@@ -615,6 +630,79 @@ def transactions_page():
                         st.error(resp.text)
 
 
+# ── Categories ────────────────────────────────────────────────────────────────
+
+def categories_page():
+    import pandas as pd
+
+    st.title("Categories")
+
+    resp = api("get", "/categories/")
+    if resp.status_code != 200:
+        st.error("Failed to load categories.")
+        return
+    categories = resp.json()
+
+    system_cats = [c for c in categories if c.get("user_id") is None]
+    user_cats   = [c for c in categories if c.get("user_id") is not None]
+
+    # ── System categories ──────────────────────────────────────────────────────
+    st.subheader("System Categories")
+    st.caption("Built-in categories used by the auto-categoriser. These cannot be modified.")
+    sys_income  = [{"Name": c["name"]} for c in system_cats if c["type"] == "income"]
+    sys_expense = [{"Name": c["name"]} for c in system_cats if c["type"] == "expense"]
+    col_inc, col_exp = st.columns(2)
+    with col_inc:
+        st.markdown("**Income**")
+        st.dataframe(pd.DataFrame(sys_income), hide_index=True, use_container_width=True)
+    with col_exp:
+        st.markdown("**Expense**")
+        st.dataframe(pd.DataFrame(sys_expense), hide_index=True, use_container_width=True)
+
+    # ── User categories ────────────────────────────────────────────────────────
+    st.subheader("Your Categories")
+    if not user_cats:
+        st.info("You haven't added any custom categories yet.")
+    else:
+        st.dataframe(
+            pd.DataFrame([{"Name": c["name"], "Type": c["type"].capitalize()} for c in user_cats]),
+            hide_index=True,
+            use_container_width=True,
+        )
+        with st.expander("Delete a category"):
+            cat_to_delete = st.selectbox(
+                "Select category",
+                [c["name"] for c in user_cats],
+                key="cat_del_select",
+            )
+            if st.button("Delete", type="primary", key="cat_del_btn"):
+                target = next(c for c in user_cats if c["name"] == cat_to_delete)
+                del_resp = api("delete", f"/categories/{target['id']}")
+                if del_resp.status_code == 204:
+                    st.success(f"'{cat_to_delete}' deleted. Transactions assigned to it are now uncategorised.")
+                    st.rerun()
+                else:
+                    st.error(del_resp.json().get("detail", del_resp.text))
+
+    # ── Add a category ─────────────────────────────────────────────────────────
+    st.subheader("Add a Category")
+    with st.form("add_category_form"):
+        col_a, col_b = st.columns([3, 1])
+        new_name = col_a.text_input("Name", placeholder="e.g. Side Income")
+        new_type = col_b.selectbox("Type", ["income", "expense"])
+        submitted = st.form_submit_button("Add", type="primary")
+    if submitted:
+        if not new_name.strip():
+            st.error("Category name cannot be empty.")
+        else:
+            add_resp = api("post", "/categories/", json={"name": new_name.strip(), "type": new_type})
+            if add_resp.status_code == 201:
+                st.success(f"'{new_name.strip()}' added.")
+                st.rerun()
+            else:
+                st.error(add_resp.json().get("detail", add_resp.text))
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -630,7 +718,7 @@ def main():
             st.session_state.clear()
             st.rerun()
 
-        page = st.radio("Navigate", ["Preferences", "Accounts", "Upload", "Transactions", "Insight"])
+        page = st.radio("Navigate", ["Preferences", "Accounts", "Upload", "Transactions", "Categories", "Insight"])
 
     if page == "Preferences":
         preferences_page()
@@ -640,6 +728,8 @@ def main():
         upload_page()
     elif page == "Transactions":
         transactions_page()
+    elif page == "Categories":
+        categories_page()
     elif page == "Insight":
         insight_page()
 

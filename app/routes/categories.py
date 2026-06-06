@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +22,17 @@ router = APIRouter(prefix="/categories", tags=["categories"])
 
 class CategoryOut(BaseModel):
     id: uuid.UUID
+    user_id: uuid.UUID | None
     name: str
     type: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    type: Literal["income", "expense"]
 
 
 class RetrainResult(BaseModel):
@@ -44,6 +51,47 @@ async def list_categories(
         .order_by(Category.type, Category.name)
     )
     return result.scalars().all()
+
+
+@router.post("/", response_model=CategoryOut, status_code=status.HTTP_201_CREATED)
+async def create_category(
+    payload: CategoryCreate,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    existing = await session.execute(
+        select(Category).where(
+            Category.name == payload.name,
+            Category.user_id.is_(None) | (Category.user_id == user.id),
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="A category with this name already exists.")
+    cat = Category(user_id=user.id, name=payload.name, type=payload.type)
+    session.add(cat)
+    await session.commit()
+    await session.refresh(cat)
+    return cat
+
+
+@router.delete("/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_category(
+    category_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    result = await session.execute(
+        select(Category).where(Category.id == category_id)
+    )
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found.")
+    if cat.user_id is None:
+        raise HTTPException(status_code=403, detail="System categories cannot be deleted.")
+    if cat.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Category not found.")
+    await session.delete(cat)
+    await session.commit()
 
 
 @router.post("/retrain", response_model=RetrainResult)
