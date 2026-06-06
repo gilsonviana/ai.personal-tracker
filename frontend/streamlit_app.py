@@ -323,6 +323,16 @@ def transactions_page():
         for acc in (accounts_resp.json() if accounts_resp.status_code == 200 else [])
     }
 
+    cats_resp = api("get", "/categories/")
+    categories = cats_resp.json() if cats_resp.status_code == 200 else []
+    cat_id_to_name = {c["id"]: c["name"] for c in categories}
+    cat_names_by_type = {
+        "income":  ["— none —"] + [c["name"] for c in categories if c["type"] == "income"],
+        "expense": ["— none —"] + [c["name"] for c in categories if c["type"] == "expense"],
+        "all":     ["— none —"] + [c["name"] for c in categories],
+    }
+    cat_name_to_id = {c["name"]: c["id"] for c in categories}
+
     today         = datetime.date.today()
     last_of_prev  = today.replace(day=1) - datetime.timedelta(days=1)
     first_of_prev = last_of_prev.replace(day=1)
@@ -391,6 +401,8 @@ def transactions_page():
 
         flags = "⚠" if tx.get("is_anomaly") else ""
 
+        cat_name = cat_id_to_name.get(tx.get("category_id") or "", "") or "—"
+
         rows.append({
             "ID":          tx["id"],
             "Date":        tx["date"],
@@ -399,6 +411,7 @@ def transactions_page():
             "Description": tx["description"],
             "Amount":      _fmt_currency(tx["amount"], currency),
             "Type":        type_label,
+            "Category":    cat_name,
             "Transfer":    transfer_dir,
             "Flags":       flags,
         })
@@ -428,8 +441,54 @@ def transactions_page():
     )
     st.caption(f"{len(display_txs)} of {len(txs)} transaction(s)")
 
-    # ── Manual transfer linking ────────────────────────────────────────────────
+    # ── Edit category ─────────────────────────────────────────────────────────
     import uuid as _uuid
+
+    with st.expander("Edit Category"):
+        st.caption("Paste a transaction ID from the table above, then pick the correct category.")
+        tx_id_raw = st.text_input("Transaction UUID", placeholder="Paste UUID…", key="cat_tx_id")
+        matched_type = "all"
+        if tx_id_raw.strip():
+            match = next((t for t in display_txs if t["id"] == tx_id_raw.strip()), None)
+            if match:
+                matched_type = match["type"] if not match["is_transfer"] else "all"
+                current_cat = cat_id_to_name.get(match.get("category_id") or "", "— none —")
+                st.caption(f"Current category: **{current_cat}**")
+        cat_options = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
+        selected_cat = st.selectbox("Category", cat_options, key="cat_select")
+        if st.button("Save Category", type="primary", key="cat_save"):
+            try:
+                tx_uuid = str(_uuid.UUID(tx_id_raw.strip()))
+            except ValueError:
+                st.error("Not a valid UUID.")
+            else:
+                new_cat_id = cat_name_to_id.get(selected_cat) if selected_cat != "— none —" else None
+                resp = api("patch", f"/transactions/{tx_uuid}", json={"category_id": str(new_cat_id) if new_cat_id else None})
+                if resp.status_code == 200:
+                    st.success(f"Category updated to '{selected_cat}'.")
+                    st.rerun()
+                else:
+                    st.error(resp.json().get("detail", resp.text))
+
+    # ── Retrain categoriser ───────────────────────────────────────────────────
+    with st.expander("Retrain Categoriser"):
+        st.caption(
+            "Train a personal model using your own categorized transactions. "
+            "The more transactions you have labeled, the better the model will perform on future imports."
+        )
+        if st.button("Retrain now", type="primary", key="retrain_cat"):
+            rt_resp = api("post", "/categories/retrain")
+            if rt_resp.status_code == 200:
+                rt = rt_resp.json()
+                st.success(
+                    f"Model trained on {rt['samples_used']} transactions "
+                    f"across {len(rt['classes'])} categories: {', '.join(rt['classes'])}."
+                )
+            else:
+                try:
+                    st.error(rt_resp.json().get("detail", rt_resp.text))
+                except Exception:
+                    st.error(rt_resp.text)
 
     with st.expander("Link / Unlink Transfers"):
         st.caption("Click any ID cell in the table above to copy it, then paste below.")

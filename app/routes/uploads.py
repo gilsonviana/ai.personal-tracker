@@ -14,6 +14,7 @@ from app.ml.categoriser import get_categoriser
 from app.ml.parser import parse_file
 from app.ml.transfer_detector import detect_transfers
 from app.models.bank_account import BankAccount, Import
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.user import User
 
@@ -66,11 +67,20 @@ async def upload_statement(
     session.add(imp)
     await session.flush()
 
-    categoriser = get_categoriser()
-    descriptions = [r["description"] for r in rows]
-    categories = categoriser.predict(descriptions) if categoriser else [None] * len(rows)
+    # Build name → UUID map for system + user categories so predictions can be
+    # stored as foreign keys rather than being discarded.
+    cat_rows = (await session.execute(
+        select(Category.id, Category.name).where(
+            Category.user_id.is_(None) | (Category.user_id == user.id)
+        )
+    )).all()
+    category_map: dict[str, uuid.UUID] = {r.name: r.id for r in cat_rows}
 
-    for row, cat in zip(rows, categories):
+    categoriser = get_categoriser(user_id=str(user.id))
+    descriptions = [r["description"] for r in rows]
+    predicted = categoriser.predict(descriptions) if categoriser else [None] * len(rows)
+
+    for row, cat_name in zip(rows, predicted):
         tx = Transaction(
             bank_account_id=account_id,
             import_id=imp.id,
@@ -78,6 +88,7 @@ async def upload_statement(
             description=row["description"],
             amount=row["amount"],
             type=row["type"],
+            category_id=category_map.get(cat_name) if cat_name else None,
         )
         session.add(tx)
 

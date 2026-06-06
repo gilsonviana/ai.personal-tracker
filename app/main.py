@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.security import auth_backend, fastapi_users
 from app.db.database import Base, engine
 from app.models import bank_account, category, fx_rate, preferences, transaction, user  # noqa: F401
-from app.routes import accounts, fx, insights, preferences as pref_route, transactions, uploads
+from app.routes import accounts, categories, fx, insights, preferences as pref_route, transactions, uploads
 from app.routes.auth import UserCreate, UserRead, UserUpdate
 from app.services.seed import seed_categories
 
@@ -41,6 +41,7 @@ app.include_router(
     fastapi_users.get_users_router(UserRead, UserUpdate), prefix="/users", tags=["users"]
 )
 app.include_router(accounts.router)
+app.include_router(categories.router)
 app.include_router(uploads.router)
 app.include_router(transactions.router)
 app.include_router(insights.router)
