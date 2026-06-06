@@ -60,10 +60,31 @@ def login_page():
                 st.error(detail)
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# ── Preferences ──────────────────────────────────────────────────────────────
 
-def dashboard_page():
-    st.header("Dashboard")
+def preferences_page():
+    st.header("Preferences")
+
+    resp = api("get", "/preferences/")
+    current = resp.json().get("main_currency", "BRL") if resp.status_code == 200 else "BRL"
+
+    _CURRENCIES = ["BRL", "USD", "EUR", "GBP", "ARS"]
+    idx = _CURRENCIES.index(current) if current in _CURRENCIES else 0
+    selected = st.selectbox("Main display currency", _CURRENCIES, index=idx)
+    st.caption("All charts and reports convert foreign-currency transactions to this currency.")
+
+    if st.button("Save", type="primary"):
+        patch = api("patch", "/preferences/", json={"main_currency": selected})
+        if patch.status_code == 200:
+            st.success(f"Main currency set to {selected}.")
+        else:
+            st.error("Failed to save preferences.")
+
+
+# ── Insight ───────────────────────────────────────────────────────────────────
+
+def insight_page():
+    st.header("Insight")
 
     # ── BETA: clear all transactions ──────────────────────────────────────────
     with st.expander("BETA tools", expanded=False):
@@ -77,32 +98,62 @@ def dashboard_page():
             else:
                 st.error(f"Failed: {resp.text}")
 
-    # ── Insights ──────────────────────────────────────────────────────────────
-    year  = st.session_state.get("insight_year")
-    month = st.session_state.get("insight_month")
+    # ── Time-range selector ───────────────────────────────────────────────────
+    time_range = st.radio(
+        "Period", ["Last 12 months", "Last year", "Last month"],
+        horizontal=True, label_visibility="collapsed",
+    )
 
+    today = datetime.date.today()
     params = ""
-    if year and month:
-        params = f"?year={year}&month={month}"
-        period_label = f"{month:02d}/{year}"
-    elif year:
-        params = f"?year={year}"
-        period_label = str(year)
-    else:
-        period_label = "last 12 months"
+    period_label = "last 12 months"
 
+    if time_range == "Last year":
+        year = st.number_input(
+            "Year", min_value=2000, max_value=today.year, value=today.year - 1, step=1,
+        )
+        params = f"?year={int(year)}"
+        period_label = str(int(year))
+    elif time_range == "Last month":
+        prev = today.replace(day=1) - datetime.timedelta(days=1)
+        c1, c2 = st.columns(2)
+        month = c1.number_input("MM", min_value=1, max_value=12, value=prev.month, step=1)
+        year  = c2.number_input("YYYY", min_value=2000, max_value=today.year, value=prev.year, step=1)
+        params = f"?year={int(year)}&month={int(month)}"
+        period_label = f"{int(month):02d}/{int(year)}"
+
+    # ── Fetch & render ────────────────────────────────────────────────────────
     resp = api("get", f"/insights/monthly{params}")
     if resp.status_code != 200:
         st.warning("Could not load insights.")
         return
 
-    data      = resp.json()
-    summaries = data["summaries"]
-    score     = data["score"]
-    narrative = data["narrative"]
+    data          = resp.json()
+    summaries     = data["summaries"]
+    score         = data["score"]
+    narrative     = data["narrative"]
+    main_currency = data.get("main_currency", "BRL")
+    has_unconverted = data.get("has_unconverted", False)
+
+    _SYMBOLS = {"BRL": "R$", "USD": "US$", "EUR": "€", "GBP": "£", "ARS": "ARS$"}
+    currency_symbol = _SYMBOLS.get(main_currency, main_currency)
 
     st.metric("Financial Health Score", f"{score}/100")
     st.info(narrative)
+
+    if has_unconverted:
+        st.warning(
+            "Some transactions are missing a conversion rate and are excluded from totals. "
+            "Click below to fetch the missing rates."
+        )
+        if st.button("Convert currency values", key="insight_convert"):
+            fx_resp = api("post", "/fx/sync")
+            if fx_resp.status_code == 200:
+                n = fx_resp.json().get("rates_fetched", 0)
+                st.success(f"Fetched {n} exchange rate(s).")
+                st.rerun()
+            else:
+                st.error("Failed to fetch exchange rates.")
 
     if summaries:
         import pandas as pd
@@ -112,25 +163,29 @@ def dashboard_page():
         _COLOR_EXPENSE = "rgb(239, 68, 68)"
         _COLOR_NET     = "rgb(234, 179, 8)"
 
+        col_income   = f"Income ({main_currency})"
+        col_expenses = f"Expenses ({main_currency})"
+        col_net      = f"Net ({main_currency})"
+
         df = pd.DataFrame(summaries).sort_values("period")
-        df["Income (R$)"]   = df["total_income"]   / 100
-        df["Expenses (R$)"] = df["total_expenses"] / 100
-        df["Net (R$)"]      = df["Income (R$)"] - df["Expenses (R$)"]
+        df[col_income]   = df["total_income"]   / 100
+        df[col_expenses] = df["total_expenses"] / 100
+        df[col_net]      = df[col_income] - df[col_expenses]
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
             name="Income",
-            x=df["period"], y=df["Income (R$)"],
+            x=df["period"], y=df[col_income],
             marker_color=_COLOR_INCOME,
         ))
         fig.add_trace(go.Bar(
             name="Expenses",
-            x=df["period"], y=df["Expenses (R$)"],
+            x=df["period"], y=df[col_expenses],
             marker_color=_COLOR_EXPENSE,
         ))
         fig.add_trace(go.Scatter(
             name="Net",
-            x=df["period"], y=df["Net (R$)"],
+            x=df["period"], y=df[col_net],
             mode="lines+markers",
             line=dict(color=_COLOR_NET, width=2),
             marker=dict(size=6),
@@ -139,7 +194,7 @@ def dashboard_page():
             barmode="group",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=0, r=0, t=30, b=0),
-            yaxis_tickprefix="R$ ",
+            yaxis_tickprefix=f"{currency_symbol} ",
         )
         st.subheader(f"Income vs Expenses — {period_label}")
         st.plotly_chart(fig, use_container_width=True)
@@ -197,6 +252,10 @@ def upload_page():
     if not accounts:
         st.info("Create an account first.")
         return
+
+    prefs_resp = api("get", "/preferences/")
+    main_currency = prefs_resp.json().get("main_currency", "BRL") if prefs_resp.status_code == 200 else "BRL"
+
     options  = {acc["name"]: acc["id"] for acc in accounts}
     selected = st.selectbox("Account", list(options.keys()))
     uploaded = st.file_uploader("CSV, PDF or TXT statement", type=["csv", "pdf", "txt"])
@@ -212,6 +271,26 @@ def upload_page():
             if data.get("transfers_detected", 0):
                 msg += f" {data['transfers_detected']} inter-account transfer(s) detected and excluded from insights."
             st.success(msg)
+            account_currency = data.get("account_currency", "BRL")
+            if account_currency != main_currency:
+                st.session_state["pending_fx_import_id"] = str(data["import_id"])
+                st.session_state["pending_fx_currency"] = account_currency
+
+    if pending_import := st.session_state.get("pending_fx_import_id"):
+        pending_currency = st.session_state.get("pending_fx_currency", "")
+        st.info(
+            f"This statement uses **{pending_currency}**, but your main currency is **{main_currency}**. "
+            "Fetch historical exchange rates to include these transactions in your reports."
+        )
+        if st.button("Convert currency values", key="upload_convert"):
+            fx_resp = api("post", f"/fx/sync?import_id={pending_import}")
+            if fx_resp.status_code == 200:
+                n = fx_resp.json().get("rates_fetched", 0)
+                st.success(f"Fetched {n} exchange rate(s). Transactions will now appear in your reports.")
+                st.session_state.pop("pending_fx_import_id", None)
+                st.session_state.pop("pending_fx_currency", None)
+            else:
+                st.error("Failed to fetch exchange rates. Please try again.")
         elif resp.status_code == 409:
             st.warning(resp.json().get("detail", "This file has already been uploaded."))
         else:
@@ -433,46 +512,18 @@ def main():
             st.session_state.clear()
             st.rerun()
 
-        page = st.radio("Navigate", ["Dashboard", "Accounts", "Upload", "Transactions"])
+        page = st.radio("Navigate", ["Preferences", "Accounts", "Upload", "Transactions", "Insight"])
 
-        # ── Generate Insight ─────────────────────────────────────────────────
-        st.divider()
-        st.subheader("Generate Insight")
-
-        period_type = st.radio("Period", ["Whole year", "Month"], label_visibility="collapsed")
-
-        current_year = datetime.date.today().year
-        if period_type == "Whole year":
-            year  = st.number_input("Year", min_value=2000, max_value=current_year + 1,
-                                    value=current_year, step=1, key="si_year")
-            month = None
-        else:
-            c1, c2 = st.columns(2)
-            month = c1.number_input("MM", min_value=1, max_value=12,
-                                    value=datetime.date.today().month, step=1, key="si_month")
-            year  = c2.number_input("YYYY", min_value=2000, max_value=current_year + 1,
-                                    value=current_year, step=1, key="si_year2")
-
-        if st.button("Generate Insight", use_container_width=True):
-            st.session_state["insight_year"]  = int(year)
-            st.session_state["insight_month"] = int(month) if month else None
-            st.session_state["_nav"] = "Dashboard"
-            st.rerun()
-
-        if st.button("Reset to last 12 months", use_container_width=True):
-            st.session_state.pop("insight_year",  None)
-            st.session_state.pop("insight_month", None)
-            st.rerun()
-
-    target = st.session_state.pop("_nav", None) or page
-    if target == "Dashboard":
-        dashboard_page()
-    elif target == "Accounts":
+    if page == "Preferences":
+        preferences_page()
+    elif page == "Accounts":
         accounts_page()
-    elif target == "Upload":
+    elif page == "Upload":
         upload_page()
-    elif target == "Transactions":
+    elif page == "Transactions":
         transactions_page()
+    elif page == "Insight":
+        insight_page()
 
 
 if __name__ == "__main__":
