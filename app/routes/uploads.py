@@ -24,6 +24,7 @@ class UploadResult(BaseModel):
     import_id: uuid.UUID
     rows_imported: int
     transfers_detected: int
+    account_currency: str
 
 
 @router.post("/{account_id}", response_model=UploadResult)
@@ -82,4 +83,9 @@ async def upload_statement(
 
     await session.commit()
     transfers = await detect_transfers(user.id, session)
-    return UploadResult(import_id=imp.id, rows_imported=len(rows), transfers_detected=transfers)
+    return UploadResult(
+        import_id=imp.id,
+        rows_imported=len(rows),
+        transfers_detected=transfers,
+        account_currency=account.currency,
+    )

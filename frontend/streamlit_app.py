@@ -334,7 +334,7 @@ def transactions_page():
 
     sel_type = col4.selectbox("Type", ["All", "Income", "Expense", "Transfer"])
 
-    url = f"/transactions/?start={start}&end={end}&limit=500"
+    url = f"/transactions/?start={start}&end={end}"
     if selected_id:
         url += f"&account_id={selected_id}"
     resp = api("get", url)

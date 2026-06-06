@@ -19,7 +19,7 @@ if url := os.getenv("DATABASE_URL"):
     config.set_main_option("sqlalchemy.url", url)
 
 from app.db.database import Base
-from app.models import user, bank_account, transaction, category  # noqa: F401
+from app.models import user, bank_account, transaction, category, preferences, fx_rate  # noqa: F401
 
 target_metadata = Base.metadata
 
