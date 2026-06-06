@@ -41,6 +41,11 @@ class TransactionPatch(BaseModel):
     is_transfer: bool | None = None
 
 
+class BulkCategoryPatch(BaseModel):
+    transaction_ids: list[uuid.UUID]
+    category_id: uuid.UUID | None = None
+
+
 class TransferLinkRequest(BaseModel):
     expense_id: uuid.UUID
     income_id: uuid.UUID
@@ -74,6 +79,37 @@ async def list_transactions(
     q = q.order_by(Transaction.date.desc())
     result = await session.execute(q)
     return result.scalars().all()
+
+
+@router.patch("/bulk-category", response_model=list[TransactionOut])
+async def bulk_patch_category(
+    payload: BulkCategoryPatch,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    if not payload.transaction_ids:
+        raise HTTPException(status_code=400, detail="No transaction IDs provided")
+    owned = await _owned_account_ids(user, session)
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.id.in_(payload.transaction_ids),
+            Transaction.bank_account_id.in_(owned),
+        )
+    )
+    txs = result.scalars().all()
+
+    found_ids = {tx.id for tx in txs}
+    missing = [str(tid) for tid in payload.transaction_ids if tid not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Transactions not found: {', '.join(missing)}")
+
+    for tx in txs:
+        tx.category_id = payload.category_id
+
+    await session.commit()
+    for tx in txs:
+        await session.refresh(tx)
+    return txs
 
 
 @router.patch("/{transaction_id}", response_model=TransactionOut)

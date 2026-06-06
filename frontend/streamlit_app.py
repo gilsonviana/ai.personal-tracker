@@ -445,30 +445,63 @@ def transactions_page():
     import uuid as _uuid
 
     with st.expander("Edit Category"):
-        st.caption("Paste a transaction ID from the table above, then pick the correct category.")
-        tx_id_raw = st.text_input("Transaction UUID", placeholder="Paste UUID…", key="cat_tx_id")
+        st.caption("Paste one or more transaction IDs (comma-separated) from the table above, then pick the correct category.")
+        tx_id_raw = st.text_input("Transaction UUID(s)", placeholder="Paste one or more UUIDs separated by commas…", key="cat_tx_id")
         matched_type = "all"
+        valid_uuids = []
         if tx_id_raw.strip():
-            match = next((t for t in display_txs if t["id"] == tx_id_raw.strip()), None)
-            if match:
-                matched_type = match["type"] if not match["is_transfer"] else "all"
-                current_cat = cat_id_to_name.get(match.get("category_id") or "", "— none —")
-                st.caption(f"Current category: **{current_cat}**")
+            raw_parts = [p.strip() for p in tx_id_raw.split(",") if p.strip()]
+            invalid_parts = []
+            for part in raw_parts:
+                try:
+                    valid_uuids.append(str(_uuid.UUID(part)))
+                except ValueError:
+                    invalid_parts.append(part)
+            if invalid_parts:
+                st.error(f"Invalid UUID format: {', '.join(invalid_parts)}")
+            if valid_uuids:
+                matched_txs = [t for t in display_txs if t["id"] in valid_uuids]
+                if len(valid_uuids) == 1 and matched_txs:
+                    match = matched_txs[0]
+                    matched_type = match["type"] if not match["is_transfer"] else "all"
+                    current_cat = cat_id_to_name.get(match.get("category_id") or "", "— none —")
+                    st.caption(f"Current category: **{current_cat}**")
+                elif len(valid_uuids) > 1:
+                    st.caption(f"{len(valid_uuids)} transaction(s) selected.")
+                    if matched_txs:
+                        types = {t["type"] for t in matched_txs if not t["is_transfer"]}
+                        matched_type = types.pop() if len(types) == 1 else "all"
+                        cats = {cat_id_to_name.get(t.get("category_id") or "", "— none —") for t in matched_txs}
+                        if len(cats) == 1:
+                            st.caption(f"Current category: **{cats.pop()}**")
+                        else:
+                            st.caption(f"Current categories: **mixed** ({', '.join(sorted(cats))})")
         cat_options = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
         selected_cat = st.selectbox("Category", cat_options, key="cat_select")
         if st.button("Save Category", type="primary", key="cat_save"):
-            try:
-                tx_uuid = str(_uuid.UUID(tx_id_raw.strip()))
-            except ValueError:
-                st.error("Not a valid UUID.")
+            if not valid_uuids:
+                st.error("Enter at least one valid UUID.")
             else:
                 new_cat_id = cat_name_to_id.get(selected_cat) if selected_cat != "— none —" else None
-                resp = api("patch", f"/transactions/{tx_uuid}", json={"category_id": str(new_cat_id) if new_cat_id else None})
-                if resp.status_code == 200:
-                    st.success(f"Category updated to '{selected_cat}'.")
-                    st.rerun()
+                cat_payload = {"category_id": str(new_cat_id) if new_cat_id else None}
+                if len(valid_uuids) == 1:
+                    resp = api("patch", f"/transactions/{valid_uuids[0]}", json=cat_payload)
+                    if resp.status_code == 200:
+                        st.success(f"Category updated to '{selected_cat}'.")
+                        st.rerun()
+                    else:
+                        st.error(resp.json().get("detail", resp.text))
                 else:
-                    st.error(resp.json().get("detail", resp.text))
+                    resp = api(
+                        "patch",
+                        "/transactions/bulk-category",
+                        json={"transaction_ids": valid_uuids, **cat_payload},
+                    )
+                    if resp.status_code == 200:
+                        st.success(f"Category updated to '{selected_cat}' for {len(resp.json())} transaction(s).")
+                        st.rerun()
+                    else:
+                        st.error(resp.json().get("detail", resp.text))
 
     # ── Retrain categoriser ───────────────────────────────────────────────────
     with st.expander("Retrain Categoriser"):
