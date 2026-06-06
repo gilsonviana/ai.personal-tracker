@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
@@ -89,3 +89,26 @@ async def upload_statement(
         transfers_detected=transfers,
         account_currency=account.currency,
     )
+
+
+@router.delete("/{import_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_import(
+    import_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    user: User = Depends(current_active_user),
+):
+    result = await session.execute(
+        select(Import)
+        .join(BankAccount, Import.bank_account_id == BankAccount.id)
+        .where(Import.id == import_id, BankAccount.user_id == user.id)
+    )
+    imp = result.scalar_one_or_none()
+    if not imp:
+        raise HTTPException(status_code=404, detail="Import not found")
+
+    # Transaction.import_id has ondelete=SET NULL, so we delete them explicitly.
+    await session.execute(
+        delete(Transaction).where(Transaction.import_id == import_id)
+    )
+    await session.delete(imp)
+    await session.commit()

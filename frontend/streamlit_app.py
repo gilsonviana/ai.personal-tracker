@@ -216,19 +216,17 @@ def accounts_page():
             imp_resp = api("get", f"/accounts/{acc['id']}/imports")
             imports  = imp_resp.json() if imp_resp.status_code == 200 else []
             if imports:
-                import pandas as pd
-                st.dataframe(
-                    pd.DataFrame([
-                        {
-                            "File":     imp["filename"],
-                            "Rows":     imp["row_count"],
-                            "Uploaded": imp["created_at"][:10],
-                        }
-                        for imp in imports
-                    ]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                for imp in imports:
+                    c1, c2, c3, c4 = st.columns([4, 1, 2, 1])
+                    c1.caption(imp["filename"])
+                    c2.caption(f"{imp['row_count']} rows")
+                    c3.caption(imp["created_at"][:10])
+                    if c4.button("Delete", key=f"del_imp_{imp['id']}", type="secondary"):
+                        del_resp = api("delete", f"/uploads/{imp['id']}")
+                        if del_resp.status_code == 204:
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete import.")
             else:
                 st.caption("No files uploaded yet.")
             if st.button("Delete Account", key=f"del_{acc['id']}", type="secondary"):
