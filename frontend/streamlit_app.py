@@ -341,9 +341,8 @@ def transactions_page():
     start = col1.date_input("From", value=first_of_prev)
     end   = col2.date_input("To",   value=last_of_prev)
 
-    acc_options = {"All accounts": None} | {a["name"]: aid for aid, a in account_info.items()}
-    sel_acc     = col3.selectbox("Account", list(acc_options.keys()))
-    selected_id = acc_options[sel_acc]
+    name_to_id   = {a["name"]: aid for aid, a in account_info.items()}
+    selected_ids = col3.multiselect("Accounts", list(name_to_id.keys()))
 
     sel_type = col4.selectbox("Type", ["All", "Income", "Expense", "Transfer"])
 
@@ -356,8 +355,8 @@ def transactions_page():
     sel_cat = col5.selectbox("Category", cat_filter_options)
 
     url = f"/transactions/?start={start}&end={end}"
-    if selected_id:
-        url += f"&account_id={selected_id}"
+    for name in selected_ids:
+        url += f"&account_ids={name_to_id[name]}"
     resp = api("get", url)
     txs  = resp.json() if resp.status_code == 200 else []
 

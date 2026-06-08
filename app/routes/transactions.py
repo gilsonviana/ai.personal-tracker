@@ -60,7 +60,7 @@ async def _owned_account_ids(user: User, session: AsyncSession) -> list[uuid.UUI
 
 @router.get("/", response_model=list[TransactionOut])
 async def list_transactions(
-    account_id: uuid.UUID | None = Query(None),
+    account_ids: list[uuid.UUID] = Query(default=[]),
     start: date | None = Query(None),
     end: date | None = Query(None),
     session: AsyncSession = Depends(get_async_session),
@@ -68,10 +68,11 @@ async def list_transactions(
 ):
     owned = await _owned_account_ids(user, session)
     q = select(Transaction).where(Transaction.bank_account_id.in_(owned))
-    if account_id:
-        if account_id not in owned:
+    if account_ids:
+        forbidden = set(account_ids) - set(owned)
+        if forbidden:
             raise HTTPException(status_code=403, detail="Forbidden")
-        q = q.where(Transaction.bank_account_id == account_id)
+        q = q.where(Transaction.bank_account_id.in_(account_ids))
     if start:
         q = q.where(Transaction.date >= start)
     if end:
