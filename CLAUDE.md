@@ -319,7 +319,17 @@ The prompt context passed to the model includes:
 - Categorisation uses a TF-IDF + scikit-learn classifier trained on labelled transaction descriptions in both EN and PT.
 - Serialised model lives in `models/` as `.joblib`. Loaded once at app startup.
 - Anomaly detection uses Isolation Forest per spending category, fitted on the user's own history after sufficient data (≥ 3 months).
-- User category corrections are stored and used to retrain on demand (stretch goal).
+- User category corrections are stored and used to retrain on demand via `POST /categories/retrain`.
+
+### Retrain behaviour
+
+`POST /categories/retrain` (frontend: "Retrain now" button in the Transactions page) trains a **per-user** model from the current state of the database:
+
+1. Reads all non-transfer transactions that have a `category_id` assigned, joining to `Category` to get the label name. This reflects any manual corrections the user has made.
+2. Fits a new TF-IDF + LogisticRegression pipeline and saves it to `models/categoriser_{user_id}.joblib`.
+3. **Never writes to the `transactions` table** — existing `category_id` values are untouched.
+
+The retrained model is applied only to **future uploads**: `app/routes/uploads.py` calls `get_categoriser(user_id=...)` and runs `predict()` on descriptions coming in from a new file, not on rows already in the DB.
 
 ---
 
