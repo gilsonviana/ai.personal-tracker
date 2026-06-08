@@ -79,7 +79,20 @@ async def list_transactions(
         q = q.where(Transaction.date <= end)
     q = q.order_by(Transaction.date.desc())
     result = await session.execute(q)
-    return result.scalars().all()
+    primary_txs = result.scalars().all()
+
+    pair_ids = [tx.transfer_pair_id for tx in primary_txs if tx.transfer_pair_id]
+    if pair_ids:
+        primary_ids = [tx.id for tx in primary_txs]
+        partner_q = select(Transaction).where(
+            Transaction.transfer_pair_id.in_(pair_ids),
+            Transaction.bank_account_id.in_(owned),
+            Transaction.id.not_in(primary_ids),
+        )
+        partner_result = await session.execute(partner_q)
+        return primary_txs + partner_result.scalars().all()
+
+    return primary_txs
 
 
 @router.patch("/bulk-category", response_model=list[TransactionOut])
