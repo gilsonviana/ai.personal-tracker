@@ -317,6 +317,9 @@ def transactions_page():
 
     st.header("Transactions")
 
+    if "selected_tx_ids" not in st.session_state:
+        st.session_state["selected_tx_ids"] = set()
+
     accounts_resp = api("get", "/accounts/")
     account_info = {
         acc["id"]: {"name": acc["name"], "currency": acc["currency"]}
@@ -387,6 +390,15 @@ def transactions_page():
             target_cat_id = cat_name_to_id.get(sel_cat)
             display_txs = [tx for tx in display_txs if tx.get("category_id") == target_cat_id]
 
+    if sel_type == "Transfer":
+        display_txs = sorted(
+            display_txs,
+            key=lambda t: (
+                str(t.get("transfer_pair_id") or ""),
+                0 if t["type"] == "expense" else 1,
+            ),
+        )
+
     rows = []
     for tx in display_txs:
         acc      = account_info.get(tx["bank_account_id"], {})
@@ -418,12 +430,13 @@ def transactions_page():
         cat_name = cat_id_to_name.get(tx.get("category_id") or "", "") or "— none —"
 
         rows.append({
+            "Select":      tx["id"] in st.session_state["selected_tx_ids"],
             "ID":          tx["id"],
             "Date":        tx["date"],
             "Account":     acc.get("name", "Unknown"),
             "Currency":    currency,
             "Description": tx["description"],
-            "Amount":      _fmt_currency(tx["amount"], currency),
+            "Amount":      tx["amount"] / 100,
             "Type":        type_label,
             "Category":    cat_name,
             "Transfer":    transfer_dir,
@@ -447,7 +460,9 @@ def transactions_page():
         num_rows="fixed",
         disabled=["ID", "Date", "Account", "Currency", "Description", "Amount", "Type", "Transfer", "Flags"],
         column_config={
-            "ID": st.column_config.TextColumn("ID", width="small"),
+            "Select":   st.column_config.CheckboxColumn("Select", default=False),
+            "ID":       st.column_config.TextColumn("ID", width="small"),
+            "Amount":   st.column_config.NumberColumn("Amount", format="%.2f"),
             "Category": st.column_config.SelectboxColumn(
                 "Category",
                 options=cat_names_by_type["all"],
@@ -478,67 +493,87 @@ def transactions_page():
     st.caption(f"{len(display_txs)} of {len(txs)} transaction(s)")
     st.caption("↑ Income   ↓ Expense   ↔ Transfer")
 
-    # ── Edit category ─────────────────────────────────────────────────────────
-    import uuid as _uuid
+    # ── Selection sync ────────────────────────────────────────────────────────
+    newly_selected = set(edited_df.loc[edited_df["Select"] == True, "ID"].astype(str))
+    if newly_selected != st.session_state["selected_tx_ids"]:
+        st.session_state["selected_tx_ids"] = newly_selected
+        st.rerun()
 
-    with st.expander("Edit Category"):
-        st.caption("For bulk edits: paste multiple transaction IDs (comma-separated) and assign them the same category at once. Single-row edits can be done directly in the table above.")
-        tx_id_raw = st.text_input("Transaction UUID(s)", placeholder="Paste one or more UUIDs separated by commas…", key="cat_tx_id")
-        matched_type = "all"
-        valid_uuids = []
-        if tx_id_raw.strip():
-            raw_parts = [p.strip() for p in tx_id_raw.split(",") if p.strip()]
-            invalid_parts = []
-            for part in raw_parts:
-                try:
-                    valid_uuids.append(str(_uuid.UUID(part)))
-                except ValueError:
-                    invalid_parts.append(part)
-            if invalid_parts:
-                st.error(f"Invalid UUID format: {', '.join(invalid_parts)}")
-            if valid_uuids:
-                matched_txs = [t for t in display_txs if t["id"] in valid_uuids]
-                if len(valid_uuids) == 1 and matched_txs:
-                    match = matched_txs[0]
-                    matched_type = match["type"] if not match["is_transfer"] else "all"
-                    current_cat = cat_id_to_name.get(match.get("category_id") or "", "— none —")
-                    st.caption(f"Current category: **{current_cat}**")
-                elif len(valid_uuids) > 1:
-                    st.caption(f"{len(valid_uuids)} transaction(s) selected.")
-                    if matched_txs:
-                        types = {t["type"] for t in matched_txs if not t["is_transfer"]}
-                        matched_type = types.pop() if len(types) == 1 else "all"
-                        cats = {cat_id_to_name.get(t.get("category_id") or "", "— none —") for t in matched_txs}
-                        if len(cats) == 1:
-                            st.caption(f"Current category: **{cats.pop()}**")
-                        else:
-                            st.caption(f"Current categories: **mixed** ({', '.join(sorted(cats))})")
-        cat_options = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
-        selected_cat = st.selectbox("Category", cat_options, key="cat_select")
-        if st.button("Save Category", type="primary", key="cat_save"):
-            if not valid_uuids:
-                st.error("Enter at least one valid UUID.")
-            else:
-                new_cat_id = cat_name_to_id.get(selected_cat) if selected_cat != "— none —" else None
-                cat_payload = {"category_id": str(new_cat_id) if new_cat_id else None}
-                if len(valid_uuids) == 1:
-                    resp = api("patch", f"/transactions/{valid_uuids[0]}", json=cat_payload)
-                    if resp.status_code == 200:
-                        st.success(f"Category updated to '{selected_cat}'.")
-                        st.rerun()
-                    else:
-                        st.error(resp.json().get("detail", resp.text))
+    selected_rows = edited_df[edited_df["Select"] == True]
+    n_sel = len(selected_rows)
+
+    if n_sel > 0:
+        act_col, clr_col = st.columns([5, 1])
+        act_col.info(f"{n_sel} transaction(s) selected.")
+        if clr_col.button("Clear", key="clear_sel"):
+            st.session_state["selected_tx_ids"] = set()
+            st.rerun()
+
+        sel_types = set(selected_rows["Type"].tolist())
+
+        linkable = (
+            n_sel == 2
+            and "↔ Transfer" not in sel_types
+            and "↓ Expense" in sel_types
+            and "↑ Income" in sel_types
+        )
+        if linkable:
+            st.markdown("**Link as Transfer**")
+            for _, row in selected_rows.iterrows():
+                st.caption(f"{row['Type']}  {row['Date']}  {row['Account']}  {row['Currency']} {row['Amount']:.2f}  —  {row['Description']}")
+            if st.button("Link as Transfer", type="primary", key="sel_link_transfer"):
+                exp_row = selected_rows[selected_rows["Type"] == "↓ Expense"].iloc[0]
+                inc_row = selected_rows[selected_rows["Type"] == "↑ Income"].iloc[0]
+                resp = api("post", "/transactions/link-transfer", json={
+                    "expense_id": exp_row["ID"],
+                    "income_id":  inc_row["ID"],
+                })
+                if resp.status_code == 200:
+                    st.success("Transactions linked as a transfer pair.")
+                    st.session_state["selected_tx_ids"] = set()
+                    st.rerun()
                 else:
-                    resp = api(
-                        "patch",
-                        "/transactions/bulk-category",
-                        json={"transaction_ids": valid_uuids, **cat_payload},
-                    )
-                    if resp.status_code == 200:
-                        st.success(f"Category updated to '{selected_cat}' for {len(resp.json())} transaction(s).")
-                        st.rerun()
-                    else:
+                    try:
                         st.error(resp.json().get("detail", resp.text))
+                    except Exception:
+                        st.error(resp.text)
+
+        elif n_sel == 1 and "↔ Transfer" in sel_types:
+            tx_id = selected_rows.iloc[0]["ID"]
+            if st.button("Unlink this transfer pair", type="secondary", key="sel_unlink"):
+                resp = api("patch", f"/transactions/{tx_id}", json={"is_transfer": False})
+                if resp.status_code == 200:
+                    st.success("Transfer pair unlinked.")
+                    st.session_state["selected_tx_ids"] = set()
+                    st.rerun()
+                else:
+                    try:
+                        st.error(resp.json().get("detail", resp.text))
+                    except Exception:
+                        st.error(resp.text)
+
+        non_transfer_sel = selected_rows[selected_rows["Type"] != "↔ Transfer"]
+        if len(non_transfer_sel) > 0:
+            sel_tx_types_raw = set()
+            for _, row in non_transfer_sel.iterrows():
+                if row["Type"] == "↑ Income":
+                    sel_tx_types_raw.add("income")
+                elif row["Type"] == "↓ Expense":
+                    sel_tx_types_raw.add("expense")
+            matched_type = sel_tx_types_raw.pop() if len(sel_tx_types_raw) == 1 else "all"
+            cat_opts = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
+            sel_cat_bulk = st.selectbox("Assign category", cat_opts, key="bulk_cat_sel")
+            if st.button("Apply Category", type="primary", key="bulk_cat_save"):
+                bulk_ids = non_transfer_sel["ID"].astype(str).tolist()
+                new_cat_id = cat_name_to_id.get(sel_cat_bulk) if sel_cat_bulk != "— none —" else None
+                cat_payload = {"category_id": str(new_cat_id) if new_cat_id else None}
+                resp = api("patch", "/transactions/bulk-category", json={"transaction_ids": bulk_ids, **cat_payload})
+                if resp.status_code == 200:
+                    st.success(f"Category updated to '{sel_cat_bulk}' for {len(bulk_ids)} transaction(s).")
+                    st.session_state["selected_tx_ids"] = set()
+                    st.rerun()
+                else:
+                    st.error(resp.json().get("detail", resp.text))
 
     # ── Retrain categoriser ───────────────────────────────────────────────────
     with st.expander("Retrain Categoriser"):
@@ -560,35 +595,8 @@ def transactions_page():
                 except Exception:
                     st.error(rt_resp.text)
 
-    with st.expander("Link / Unlink Transfers"):
-        st.caption("Click any ID cell in the table above to copy it, then paste below.")
-        st.subheader("Link as Transfer")
-        col_exp, col_inc = st.columns(2)
-        with col_exp:
-            exp_id_raw = st.text_input("Expense leg UUID", placeholder="Paste UUID…", key="link_exp")
-        with col_inc:
-            inc_id_raw = st.text_input("Income leg UUID", placeholder="Paste UUID…", key="link_inc")
-        if st.button("Link as Transfer", type="primary"):
-            try:
-                expense_uuid = str(_uuid.UUID(exp_id_raw.strip()))
-                income_uuid  = str(_uuid.UUID(inc_id_raw.strip()))
-            except ValueError:
-                st.error("One or both IDs are not valid UUIDs.")
-            else:
-                resp = api("post", "/transactions/link-transfer", json={
-                    "expense_id": expense_uuid,
-                    "income_id":  income_uuid,
-                })
-                if resp.status_code == 200:
-                    st.success("Transactions linked as a transfer pair.")
-                    st.rerun()
-                else:
-                    try:
-                        st.error(resp.json().get("detail", resp.text))
-                    except Exception:
-                        st.error(resp.text)
-
-        st.divider()
+    with st.expander("Unlink Transfers"):
+        st.caption("To link two transactions as a transfer, select the expense row and the income row in the table above — a Link button will appear. To unlink, select the transfer row and click Unlink, or use the dropdown below.")
         st.subheader("Unlink Transfer Pair")
         seen_pairs: set[str] = set()
         unlink_options: dict[str, str] = {}
