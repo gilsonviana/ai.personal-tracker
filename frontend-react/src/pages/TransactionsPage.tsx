@@ -12,7 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import type { Transaction, TransactionFilters } from "@/types"
 
-const PAGE_SIZE = 25
+const PAGE_SIZE = 100
 
 function defaultFilters(): TransactionFilters {
   const today = new Date()
