@@ -357,11 +357,12 @@ def transactions_page():
         cat_filter_options = ["All categories", "— none —"] + [c["name"] for c in categories]
     sel_cat = col5.selectbox("Category", cat_filter_options)
 
-    url = f"/transactions/?start={start}&end={end}"
+    url = f"/transactions/?start={start}&end={end}&limit=2000"
     for name in selected_ids:
         url += f"&account_ids={name_to_id[name]}"
     resp = api("get", url)
-    txs  = resp.json() if resp.status_code == 200 else []
+    page = resp.json() if resp.status_code == 200 else {}
+    txs  = page.get("items", [])
 
     if not txs:
         st.info("No transactions found for the selected period.")

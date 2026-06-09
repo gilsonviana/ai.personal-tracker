@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_active_user
@@ -46,6 +47,13 @@ class BulkCategoryPatch(BaseModel):
     category_id: uuid.UUID | None = None
 
 
+class TransactionPage(BaseModel):
+    items: list[TransactionOut]
+    total: int
+    offset: int
+    limit: int
+
+
 class TransferLinkRequest(BaseModel):
     expense_ids: list[uuid.UUID]
     income_id: uuid.UUID
@@ -58,41 +66,78 @@ async def _owned_account_ids(user: User, session: AsyncSession) -> list[uuid.UUI
     return result.scalars().all()
 
 
-@router.get("/", response_model=list[TransactionOut])
+@router.get("/", response_model=TransactionPage)
 async def list_transactions(
     account_ids: list[uuid.UUID] = Query(default=[]),
     start: date | None = Query(None),
     end: date | None = Query(None),
+    tx_type: Literal["income", "expense"] | None = Query(None, alias="type"),
+    is_transfer: bool | None = Query(None),
+    category_id: uuid.UUID | None = Query(None),
+    search: str | None = Query(None),
+    is_anomaly: bool | None = Query(None),
+    limit: int = Query(100, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
     owned = await _owned_account_ids(user, session)
-    q = select(Transaction).where(Transaction.bank_account_id.in_(owned))
+
+    filters = [Transaction.bank_account_id.in_(owned)]
+
     if account_ids:
         forbidden = set(account_ids) - set(owned)
         if forbidden:
             raise HTTPException(status_code=403, detail="Forbidden")
-        q = q.where(Transaction.bank_account_id.in_(account_ids))
+        filters.append(Transaction.bank_account_id.in_(account_ids))
     if start:
-        q = q.where(Transaction.date >= start)
+        filters.append(Transaction.date >= start)
     if end:
-        q = q.where(Transaction.date <= end)
-    q = q.order_by(Transaction.date.desc())
-    result = await session.execute(q)
-    primary_txs = result.scalars().all()
+        filters.append(Transaction.date <= end)
+    if tx_type is not None:
+        filters.append(Transaction.type == tx_type)
+    if is_transfer is not None:
+        filters.append(Transaction.is_transfer == is_transfer)
+    if category_id is not None:
+        filters.append(Transaction.category_id == category_id)
+    if search:
+        filters.append(Transaction.description.ilike(f"%{search}%"))
+    if is_anomaly is not None:
+        filters.append(Transaction.is_anomaly == is_anomaly)
 
+    total: int = (
+        await session.execute(select(func.count(Transaction.id)).where(*filters))
+    ).scalar_one()
+
+    q = (
+        select(Transaction)
+        .where(*filters)
+        .order_by(Transaction.date.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    primary_txs = (await session.execute(q)).scalars().all()
+
+    # Fetch partner legs for any transfer pairs on the current page
+    partner_txs: list[Transaction] = []
     pair_ids = [tx.transfer_pair_id for tx in primary_txs if tx.transfer_pair_id]
     if pair_ids:
         primary_ids = [tx.id for tx in primary_txs]
-        partner_q = select(Transaction).where(
-            Transaction.transfer_pair_id.in_(pair_ids),
-            Transaction.bank_account_id.in_(owned),
-            Transaction.id.not_in(primary_ids),
+        partner_result = await session.execute(
+            select(Transaction).where(
+                Transaction.transfer_pair_id.in_(pair_ids),
+                Transaction.bank_account_id.in_(owned),
+                Transaction.id.not_in(primary_ids),
+            )
         )
-        partner_result = await session.execute(partner_q)
-        return primary_txs + partner_result.scalars().all()
+        partner_txs = partner_result.scalars().all()
 
-    return primary_txs
+    return TransactionPage(
+        items=list(primary_txs) + list(partner_txs),
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.patch("/bulk-category", response_model=list[TransactionOut])

@@ -3,10 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.config import settings
 from app.core.security import auth_backend, fastapi_users
 from app.db.database import Base, engine
 from app.models import bank_account, category, fx_rate, preferences, transaction, user  # noqa: F401
-from app.routes import accounts, categories, fx, insights, preferences as pref_route, transactions, uploads
+from app.routes import accounts, auth as auth_routes, categories, fx, insights, preferences as pref_route, transactions, uploads
 from app.routes.auth import UserCreate, UserRead, UserUpdate
 from app.services.seed import seed_categories
 
@@ -23,12 +24,13 @@ app = FastAPI(title="FInSight API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth_routes.router)
 app.include_router(
     fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"]
 )

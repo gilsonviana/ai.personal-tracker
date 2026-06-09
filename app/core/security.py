@@ -42,6 +42,14 @@ def get_jwt_strategy() -> JWTStrategy:
     )
 
 
+def get_refresh_jwt_strategy() -> JWTStrategy:
+    # Uses a derived secret so refresh tokens can't be used as access tokens
+    return JWTStrategy(
+        secret=settings.SECRET_KEY + "-refresh",
+        lifetime_seconds=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+    )
+
+
 auth_backend = AuthenticationBackend(
     name="jwt",
     transport=bearer_transport,
