@@ -18,6 +18,12 @@ from app.models.user import User
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
+_SORT_COLS = {
+    "date": Transaction.date,
+    "amount": Transaction.amount,
+    "description": Transaction.description,
+}
+
 
 class TransactionOut(BaseModel):
     id: uuid.UUID
@@ -78,6 +84,8 @@ async def list_transactions(
     is_anomaly: bool | None = Query(None),
     limit: int = Query(100, ge=1, le=2000),
     offset: int = Query(0, ge=0),
+    sort_by: Literal["date", "amount", "description"] = Query("date"),
+    sort_dir: Literal["asc", "desc"] = Query("desc"),
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
@@ -109,10 +117,11 @@ async def list_transactions(
         await session.execute(select(func.count(Transaction.id)).where(*filters))
     ).scalar_one()
 
+    order_expr = _SORT_COLS[sort_by].asc() if sort_dir == "asc" else _SORT_COLS[sort_by].desc()
     q = (
         select(Transaction)
         .where(*filters)
-        .order_by(Transaction.date.desc())
+        .order_by(order_expr)
         .limit(limit)
         .offset(offset)
     )

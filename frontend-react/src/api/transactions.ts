@@ -19,6 +19,8 @@ function buildParams(filters: TransactionFilters): URLSearchParams {
   if (filters.is_anomaly !== undefined) p.append("is_anomaly", String(filters.is_anomaly))
   if (filters.limit !== undefined) p.append("limit", String(filters.limit))
   if (filters.offset !== undefined) p.append("offset", String(filters.offset))
+  if (filters.sort_by) p.append("sort_by", filters.sort_by)
+  if (filters.sort_dir) p.append("sort_dir", filters.sort_dir)
   filters.account_ids?.forEach((id) => p.append("account_ids", id))
   return p
 }

@@ -102,6 +102,8 @@ export interface TransactionFilters {
   is_anomaly?: boolean
   limit?: number
   offset?: number
+  sort_by?: "date" | "amount" | "description"
+  sort_dir?: "asc" | "desc"
 }
 
 // ── Categories ────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsUpDown } from "lucide-react"
 import { useTransactions } from "@/hooks/use-transactions"
 import { useAccounts } from "@/hooks/use-accounts"
 import { useCategories } from "@/hooks/use-categories"
@@ -24,6 +24,36 @@ function defaultFilters(): TransactionFilters {
     limit: PAGE_SIZE,
     offset: 0,
   }
+}
+
+type SortCol = "date" | "amount" | "description"
+
+function SortableHeader({
+  col,
+  label,
+  filters,
+  onSort,
+}: {
+  col: SortCol
+  label: string
+  filters: TransactionFilters
+  onSort: (col: SortCol) => void
+}) {
+  const active = (filters.sort_by ?? "date") === col
+  const dir = filters.sort_dir ?? "desc"
+  return (
+    <button
+      className="flex items-center gap-1 font-medium hover:text-foreground"
+      onClick={() => onSort(col)}
+    >
+      {label}
+      {active ? (
+        dir === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+      ) : (
+        <ChevronsUpDown className="h-3 w-3 opacity-40" />
+      )}
+    </button>
+  )
 }
 
 function TypeBadge({ tx }: { tx: Transaction }) {
@@ -74,6 +104,13 @@ export default function TransactionsPage() {
 
   function patchFilters(patch: Partial<TransactionFilters>) {
     setFilters((f) => ({ ...f, ...patch }))
+  }
+
+  function handleSort(col: SortCol) {
+    const currentCol = filters.sort_by ?? "date"
+    const currentDir = filters.sort_dir ?? "desc"
+    const newDir = currentCol === col && currentDir === "desc" ? "asc" : "desc"
+    patchFilters({ sort_by: col, sort_dir: newDir, offset: 0 })
   }
 
   function toggleRow(id: string) {
@@ -128,10 +165,16 @@ export default function TransactionsPage() {
                   onCheckedChange={toggleAll}
                 />
               </th>
-              <th className="px-3 py-2 text-left font-medium">Date</th>
+              <th className="px-3 py-2 text-left">
+                <SortableHeader col="date" label="Date" filters={filters} onSort={handleSort} />
+              </th>
               <th className="px-3 py-2 text-left font-medium">Account</th>
-              <th className="px-3 py-2 text-left font-medium">Description</th>
-              <th className="px-3 py-2 text-right font-medium">Amount</th>
+              <th className="px-3 py-2 text-left">
+                <SortableHeader col="description" label="Description" filters={filters} onSort={handleSort} />
+              </th>
+              <th className="px-3 py-2 text-right">
+                <SortableHeader col="amount" label="Amount" filters={filters} onSort={handleSort} />
+              </th>
               <th className="px-3 py-2 text-left font-medium">Type</th>
               <th className="px-3 py-2 text-left font-medium">Category</th>
               <th className="px-3 py-2 text-left font-medium">Transfer</th>
