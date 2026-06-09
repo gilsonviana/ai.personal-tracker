@@ -7,9 +7,12 @@ import {
   Tags,
   Settings,
   LogOut,
+  Moon,
+  Sun,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
+import { useTheme } from "@/lib/theme-context"
 import { Button } from "@/components/ui/button"
 
 const NAV = [
@@ -23,6 +26,7 @@ const NAV = [
 
 export default function Sidebar() {
   const { user, logout } = useAuth()
+  const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
 
   function handleLogout() {
@@ -59,6 +63,10 @@ export default function Sidebar() {
         ))}
       </nav>
 
+      <Button variant="ghost" size="sm" className="justify-start gap-3 text-muted-foreground" onClick={toggleTheme}>
+        {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        {theme === "dark" ? "Light mode" : "Dark mode"}
+      </Button>
       <Button variant="ghost" size="sm" className="justify-start gap-3 text-muted-foreground" onClick={handleLogout}>
         <LogOut className="h-4 w-4" />
         Sign out
