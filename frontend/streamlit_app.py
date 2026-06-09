@@ -493,40 +493,44 @@ def transactions_page():
     st.caption(f"{len(display_txs)} of {len(txs)} transaction(s)")
     st.caption("↑ Income   ↓ Expense   ↔ Transfer")
 
-    # ── Selection sync ────────────────────────────────────────────────────────
+    # ── Selection sync (no forced rerun — data_editor auto-reruns on checkbox click) ──
     newly_selected = set(edited_df.loc[edited_df["Select"] == True, "ID"].astype(str))
-    if newly_selected != st.session_state["selected_tx_ids"]:
-        st.session_state["selected_tx_ids"] = newly_selected
-        st.rerun()
+    st.session_state["selected_tx_ids"] = newly_selected
 
     selected_rows = edited_df[edited_df["Select"] == True]
     n_sel = len(selected_rows)
+    sel_types = set(selected_rows["Type"].tolist()) if n_sel > 0 else set()
 
-    if n_sel > 0:
-        act_col, clr_col = st.columns([5, 1])
-        act_col.info(f"{n_sel} transaction(s) selected.")
-        if clr_col.button("Clear", key="clear_sel"):
-            st.session_state["selected_tx_ids"] = set()
-            st.rerun()
+    st.divider()
+    hdr_col, clr_col = st.columns([5, 1])
+    hdr_col.markdown("**Actions**")
+    if n_sel > 0 and clr_col.button("Clear selection", key="clear_sel"):
+        st.session_state["selected_tx_ids"] = set()
+        st.rerun()
 
-        sel_types = set(selected_rows["Type"].tolist())
-
-        linkable = (
-            n_sel == 2
-            and "↔ Transfer" not in sel_types
-            and "↓ Expense" in sel_types
-            and "↑ Income" in sel_types
-        )
-        if linkable:
-            st.markdown("**Link as Transfer**")
+    # ── Link as Transfer ──────────────────────────────────────────────────────
+    link_expanded = n_sel >= 2 and "↔ Transfer" not in sel_types
+    with st.expander("Link as Transfer", expanded=link_expanded):
+        if n_sel < 2 or "↔ Transfer" in sel_types:
+            st.info(
+                "Check at least two rows in the table above — "
+                "one ↓ Expense (or more) and exactly one ↑ Income — then link them as a transfer."
+            )
+        else:
+            exp_rows  = selected_rows[selected_rows["Type"] == "↓ Expense"]
+            inc_rows  = selected_rows[selected_rows["Type"] == "↑ Income"]
+            valid_pair = len(exp_rows) >= 1 and len(inc_rows) == 1
             for _, row in selected_rows.iterrows():
-                st.caption(f"{row['Type']}  {row['Date']}  {row['Account']}  {row['Currency']} {row['Amount']:.2f}  —  {row['Description']}")
-            if st.button("Link as Transfer", type="primary", key="sel_link_transfer"):
-                exp_row = selected_rows[selected_rows["Type"] == "↓ Expense"].iloc[0]
-                inc_row = selected_rows[selected_rows["Type"] == "↑ Income"].iloc[0]
+                st.caption(
+                    f"{row['Type']}  {row['Date']}  {row['Account']}  "
+                    f"{row['Currency']} {row['Amount']:.2f}  —  {row['Description']}"
+                )
+            if not valid_pair:
+                st.warning("Select at least one ↓ Expense and exactly one ↑ Income.")
+            if st.button("Link as Transfer", type="primary", key="sel_link_transfer", disabled=not valid_pair):
                 resp = api("post", "/transactions/link-transfer", json={
-                    "expense_id": exp_row["ID"],
-                    "income_id":  inc_row["ID"],
+                    "expense_ids": exp_rows["ID"].tolist(),
+                    "income_id":   inc_rows.iloc[0]["ID"],
                 })
                 if resp.status_code == 200:
                     st.success("Transactions linked as a transfer pair.")
@@ -538,42 +542,44 @@ def transactions_page():
                     except Exception:
                         st.error(resp.text)
 
-        elif n_sel == 1 and "↔ Transfer" in sel_types:
-            tx_id = selected_rows.iloc[0]["ID"]
-            if st.button("Unlink this transfer pair", type="secondary", key="sel_unlink"):
-                resp = api("patch", f"/transactions/{tx_id}", json={"is_transfer": False})
-                if resp.status_code == 200:
-                    st.success("Transfer pair unlinked.")
-                    st.session_state["selected_tx_ids"] = set()
-                    st.rerun()
-                else:
-                    try:
-                        st.error(resp.json().get("detail", resp.text))
-                    except Exception:
-                        st.error(resp.text)
-
-        non_transfer_sel = selected_rows[selected_rows["Type"] != "↔ Transfer"]
-        if len(non_transfer_sel) > 0:
-            sel_tx_types_raw = set()
-            for _, row in non_transfer_sel.iterrows():
-                if row["Type"] == "↑ Income":
-                    sel_tx_types_raw.add("income")
-                elif row["Type"] == "↓ Expense":
-                    sel_tx_types_raw.add("expense")
-            matched_type = sel_tx_types_raw.pop() if len(sel_tx_types_raw) == 1 else "all"
-            cat_opts = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
-            sel_cat_bulk = st.selectbox("Assign category", cat_opts, key="bulk_cat_sel")
-            if st.button("Apply Category", type="primary", key="bulk_cat_save"):
-                bulk_ids = non_transfer_sel["ID"].astype(str).tolist()
-                new_cat_id = cat_name_to_id.get(sel_cat_bulk) if sel_cat_bulk != "— none —" else None
-                cat_payload = {"category_id": str(new_cat_id) if new_cat_id else None}
-                resp = api("patch", "/transactions/bulk-category", json={"transaction_ids": bulk_ids, **cat_payload})
-                if resp.status_code == 200:
-                    st.success(f"Category updated to '{sel_cat_bulk}' for {len(bulk_ids)} transaction(s).")
-                    st.session_state["selected_tx_ids"] = set()
-                    st.rerun()
-                else:
+    # ── Unlink (single transfer row selected) ────────────────────────────────
+    if n_sel == 1 and "↔ Transfer" in sel_types:
+        tx_id = selected_rows.iloc[0]["ID"]
+        if st.button("Unlink this transfer pair", type="secondary", key="sel_unlink"):
+            resp = api("patch", f"/transactions/{tx_id}", json={"is_transfer": False})
+            if resp.status_code == 200:
+                st.success("Transfer pair unlinked.")
+                st.session_state["selected_tx_ids"] = set()
+                st.rerun()
+            else:
+                try:
                     st.error(resp.json().get("detail", resp.text))
+                except Exception:
+                    st.error(resp.text)
+
+    # ── Assign Category ───────────────────────────────────────────────────────
+    non_transfer_sel = selected_rows[selected_rows["Type"] != "↔ Transfer"]
+    if len(non_transfer_sel) > 0:
+        sel_tx_types_raw = set()
+        for _, row in non_transfer_sel.iterrows():
+            if row["Type"] == "↑ Income":
+                sel_tx_types_raw.add("income")
+            elif row["Type"] == "↓ Expense":
+                sel_tx_types_raw.add("expense")
+        matched_type = sel_tx_types_raw.pop() if len(sel_tx_types_raw) == 1 else "all"
+        cat_opts = cat_names_by_type.get(matched_type, cat_names_by_type["all"])
+        sel_cat_bulk = st.selectbox("Assign category", cat_opts, key="bulk_cat_sel")
+        if st.button("Apply Category", type="primary", key="bulk_cat_save"):
+            bulk_ids = non_transfer_sel["ID"].astype(str).tolist()
+            new_cat_id = cat_name_to_id.get(sel_cat_bulk) if sel_cat_bulk != "— none —" else None
+            cat_payload = {"category_id": str(new_cat_id) if new_cat_id else None}
+            resp = api("patch", "/transactions/bulk-category", json={"transaction_ids": bulk_ids, **cat_payload})
+            if resp.status_code == 200:
+                st.success(f"Category updated to '{sel_cat_bulk}' for {len(bulk_ids)} transaction(s).")
+                st.session_state["selected_tx_ids"] = set()
+                st.rerun()
+            else:
+                st.error(resp.json().get("detail", resp.text))
 
     # ── Retrain categoriser ───────────────────────────────────────────────────
     with st.expander("Retrain Categoriser"):

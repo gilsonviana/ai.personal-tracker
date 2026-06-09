@@ -47,7 +47,7 @@ class BulkCategoryPatch(BaseModel):
 
 
 class TransferLinkRequest(BaseModel):
-    expense_id: uuid.UUID
+    expense_ids: list[uuid.UUID]
     income_id: uuid.UUID
 
 
@@ -174,44 +174,50 @@ async def link_transfer_pair(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
+    if not payload.expense_ids:
+        raise HTTPException(status_code=422, detail="At least one expense_id is required")
+
     owned = await _owned_account_ids(user, session)
+    all_ids = list(payload.expense_ids) + [payload.income_id]
+
     result = await session.execute(
         select(Transaction).where(
-            Transaction.id.in_([payload.expense_id, payload.income_id]),
+            Transaction.id.in_(all_ids),
             Transaction.bank_account_id.in_(owned),
         )
     )
     txs = result.scalars().all()
 
-    if len(txs) != 2:
-        raise HTTPException(status_code=404, detail="One or both transactions not found")
+    if len(txs) != len(all_ids):
+        raise HTTPException(status_code=404, detail="One or more transactions not found")
 
     tx_map = {tx.id: tx for tx in txs}
-    exp_tx = tx_map.get(payload.expense_id)
-    inc_tx = tx_map.get(payload.income_id)
+    exp_txs = [tx_map[eid] for eid in payload.expense_ids]
+    inc_tx  = tx_map[payload.income_id]
 
-    if exp_tx.type != "expense" or inc_tx.type != "income":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="expense_id must be an expense transaction and income_id must be an income transaction",
-        )
+    if any(t.type != "expense" for t in exp_txs):
+        raise HTTPException(status_code=422, detail="All expense_ids must be expense transactions")
+    if inc_tx.type != "income":
+        raise HTTPException(status_code=422, detail="income_id must be an income transaction")
 
-    if exp_tx.bank_account_id == inc_tx.bank_account_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Both transactions belong to the same account — a transfer requires two different accounts",
-        )
+    all_accounts = {t.bank_account_id for t in exp_txs} | {inc_tx.bank_account_id}
+    if len(all_accounts) < 2:
+        raise HTTPException(status_code=422, detail="Transactions must span at least two different accounts")
 
-    if exp_tx.is_transfer or inc_tx.is_transfer:
+    if any(t.is_transfer for t in exp_txs) or inc_tx.is_transfer:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="One or both transactions are already part of a transfer pair — unlink them first",
+            detail="One or more transactions are already part of a transfer pair — unlink them first",
         )
 
-    await mark_transfer(payload.expense_id, payload.income_id, session)
-    await session.refresh(exp_tx)
-    await session.refresh(inc_tx)
-    return [exp_tx, inc_tx]
+    pair_id = uuid.uuid4()
+    for t in exp_txs + [inc_tx]:
+        t.is_transfer = True
+        t.transfer_pair_id = pair_id
+    await session.commit()
+    for t in exp_txs + [inc_tx]:
+        await session.refresh(t)
+    return exp_txs + [inc_tx]
 
 
 @router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
